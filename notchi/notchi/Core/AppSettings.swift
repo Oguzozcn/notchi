@@ -6,7 +6,7 @@ enum EmotionAnalysisProvider: String, CaseIterable, Identifiable {
 
     var id: String { rawValue }
 
-    var displayName: String {
+    nonisolated var displayName: String {
         switch self {
         case .claude:
             "Claude"

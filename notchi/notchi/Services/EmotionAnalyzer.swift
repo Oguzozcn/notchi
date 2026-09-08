@@ -1,7 +1,7 @@
 import Foundation
 import os.log
 
-private let logger = Logger(subsystem: "com.ruban.notchi", category: "EmotionAnalyzer")
+nonisolated private let logger = Logger(subsystem: "com.ruban.notchi", category: "EmotionAnalyzer")
 
 struct ClaudeSettingsConfig {
     let apiURL: URL
@@ -288,7 +288,7 @@ private struct HaikuResponse: Decodable {
     }
 }
 
-private struct OpenAIChatCompletionResponse: Decodable {
+private nonisolated struct OpenAIChatCompletionResponse: Decodable {
     let choices: [Choice]
 
     struct Choice: Decodable {
@@ -312,7 +312,7 @@ private struct OpenAIChatCompletionResponse: Decodable {
     }
 }
 
-private struct EmotionResponse: Decodable {
+private nonisolated struct EmotionResponse: Decodable {
     let emotion: String
     let intensity: Double
 }
@@ -367,7 +367,7 @@ enum EmotionAnalysisRequestError: LocalizedError, Equatable {
     }
 }
 
-private struct EmotionAnalysisResponseParser {
+private nonisolated struct EmotionAnalysisResponseParser {
     private static let validEmotions: Set<String> = ["happy", "sad", "neutral"]
 
     static func parse(_ text: String) throws -> (emotion: String, intensity: Double) {
