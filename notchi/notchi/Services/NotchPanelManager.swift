@@ -38,13 +38,14 @@ final class NotchPanelManager {
     private let hoverCollapseDelay: Duration
     private let isTextEditingActive: @MainActor () -> Bool
     private let activeSessionCountProvider: @MainActor () -> Int
+    private let collapsedRingVisibleProvider: @MainActor () -> Bool
     private let mouseLocationProvider: @MainActor () -> CGPoint
     private let collapsedHoverEnterFeedback: @MainActor () -> Void
     private let pinToggleFeedback: @MainActor () -> Void
 
     private var observerTokens: [NSObjectProtocol] = []
     private var cachedShouldUseCompactIdle = false
-    private var observedHideSpriteWhenIdle = false
+    private var observedShowSpriteWhenIdle = false
     private var pendingHoverExitTask: Task<Void, Never>?
     private var pendingHoverExpandTask: Task<Void, Never>?
     private var pendingHoverCollapseTask: Task<Void, Never>?
@@ -56,6 +57,7 @@ final class NotchPanelManager {
     private(set) var isCollapsedHovered = false
     private(set) var collapsedMode: CollapsedMode = .normalCollapsed
     private(set) var notchSize: CGSize = .zero
+    private(set) var screenHasNotch = false
     private(set) var notchRect: CGRect = .zero
     private(set) var compactNotchRect: CGRect = .zero
     private(set) var panelRect: CGRect = .zero
@@ -83,6 +85,19 @@ final class NotchPanelManager {
         hoverExpandDelay: Duration = .milliseconds(300),
         hoverCollapseDelay: Duration = .milliseconds(500),
         activeSessionCountProvider: @escaping @MainActor () -> Int = { SessionStore.shared.activeSessionCount },
+        collapsedRingVisibleProvider: @escaping @MainActor () -> Bool = {
+            guard AppSettings.isUsageEnabled,
+                  AppSettings.notchLeftContent == .ring || AppSettings.notchRightContent == .ring else {
+                return false
+            }
+            return NotchContentView.collapsedRingPercentage(
+                isUsageEnabled: AppSettings.isUsageEnabled,
+                provider: AppSettings.lastUsedAgentProvider,
+                claudeUsage: ClaudeUsageService.shared.currentUsage,
+                codexSessionUsage: CodexUsageService.shared.currentUsage,
+                codexWeeklyUsage: CodexUsageService.shared.currentWeeklyUsage
+            ) != nil
+        },
         mouseLocationProvider: @escaping @MainActor () -> CGPoint = { NSEvent.mouseLocation },
         isTextEditingActive: @escaping @MainActor () -> Bool = {
             (NSApp.keyWindow as? NotchPanel)?.firstResponder is NSTextView
@@ -99,10 +114,11 @@ final class NotchPanelManager {
         self.hoverCollapseDelay = hoverCollapseDelay
         self.isTextEditingActive = isTextEditingActive
         self.activeSessionCountProvider = activeSessionCountProvider
+        self.collapsedRingVisibleProvider = collapsedRingVisibleProvider
         self.mouseLocationProvider = mouseLocationProvider
         self.collapsedHoverEnterFeedback = collapsedHoverEnterFeedback
         self.pinToggleFeedback = pinToggleFeedback
-        self.observedHideSpriteWhenIdle = userDefaults.bool(forKey: AppSettings.hideSpriteWhenIdleKey)
+        self.observedShowSpriteWhenIdle = AppSettings.showSpriteWhenIdle(in: userDefaults)
 
         if startEventMonitors {
             setupEventMonitors()
@@ -128,6 +144,7 @@ final class NotchPanelManager {
         let screenFrame = screen.frame
 
         notchSize = newNotchSize
+        screenHasNotch = screen.hasNotch
         systemNotchPath = screen.notchPath
 
         let notchCenterX = screenFrame.origin.x + screenFrame.width / 2
@@ -242,8 +259,8 @@ final class NotchPanelManager {
     }
 
     func refreshIdleMode() {
-        cachedShouldUseCompactIdle = userDefaults.bool(forKey: AppSettings.hideSpriteWhenIdleKey)
-            && activeSessionCountProvider() == 0
+        cachedShouldUseCompactIdle = activeSessionCountProvider() == 0
+            && (!AppSettings.showSpriteWhenIdle(in: userDefaults) || !collapsedRingVisibleProvider())
 
         if !cachedShouldUseCompactIdle {
             cancelPendingHoverExitTask()
@@ -262,10 +279,10 @@ final class NotchPanelManager {
         resyncCollapsedHoverIfNeeded()
     }
 
-    func refreshIdleModeIfHideSpritePreferenceChanged() {
-        let current = userDefaults.bool(forKey: AppSettings.hideSpriteWhenIdleKey)
-        guard current != observedHideSpriteWhenIdle else { return }
-        observedHideSpriteWhenIdle = current
+    func refreshIdleModeIfShowSpritePreferenceChanged() {
+        let current = AppSettings.showSpriteWhenIdle(in: userDefaults)
+        guard current != observedShowSpriteWhenIdle else { return }
+        observedShowSpriteWhenIdle = current
         refreshIdleMode()
     }
 
@@ -289,7 +306,7 @@ final class NotchPanelManager {
                 queue: nil
             ) { [weak self] _ in
                 Task { @MainActor [weak self] in
-                    self?.refreshIdleModeIfHideSpritePreferenceChanged()
+                    self?.refreshIdleModeIfShowSpritePreferenceChanged()
                 }
             }
         )

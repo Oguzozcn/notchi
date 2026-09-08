@@ -13,7 +13,7 @@ struct UsageDetailView: View {
     }
 
     @State private var selectedTab: UsageTab
-    @AppStorage(AppSettings.hideGrassIslandKey) private var hideGrassIsland = false
+    @AppStorage(AppSettings.showGrassIslandKey) private var showGrassIsland = true
     @Environment(\.panelScale) private var panelScale
 
     init(
@@ -79,7 +79,7 @@ struct UsageDetailView: View {
         switch resolvedProvider {
         case .claude:
             let stale = claudeUsage.isUsageStale
-            let heldOver = stale || claudeUsage.isUsingHeadersFallback
+            let heldOver = claudeUsage.isWeeklyUsageHeldOver
             return [
                 UsageMetrics.periodDisplay(title: String(localized: "Session"), usage: claudeUsage.currentUsage, isStale: stale),
                 UsageMetrics.periodDisplay(title: String(localized: "Weekly"), usage: claudeUsage.currentWeeklyUsage, isStale: heldOver),
@@ -121,16 +121,16 @@ struct UsageDetailView: View {
             windowStart: windowStart, today: today, calendar: calendar)
     }
 
-    static func chartHeight(hideGrassIsland: Bool) -> CGFloat {
-        hideGrassIsland ? 150 : CostDashboardView.defaultChartHeight
+    static func chartHeight(showGrassIsland: Bool) -> CGFloat {
+        showGrassIsland ? CostDashboardView.defaultChartHeight : 150
     }
 
-    static func sectionSpacing(hideGrassIsland: Bool) -> CGFloat {
-        hideGrassIsland ? 15 : 10
+    static func sectionSpacing(showGrassIsland: Bool) -> CGFloat {
+        showGrassIsland ? 10 : 15
     }
 
     @ViewBuilder private var costDashboard: some View {
-        let chartHeight = Self.chartHeight(hideGrassIsland: hideGrassIsland)
+        let chartHeight = Self.chartHeight(showGrassIsland: showGrassIsland)
         switch resolvedTab {
         case .provider(let provider):
             let stores = provider == .codex
@@ -149,9 +149,9 @@ struct UsageDetailView: View {
         }
     }
 
-    static func usesTwoColumnLayout(rowCount: Int, hideGrassIsland: Bool, panelScale: CGFloat) -> Bool {
+    static func usesTwoColumnLayout(rowCount: Int, showGrassIsland: Bool, panelScale: CGFloat) -> Bool {
         guard panelScale <= 1 else { return false }
-        return rowCount >= 3 && !hideGrassIsland
+        return rowCount >= 3 && showGrassIsland
     }
 
     private var usageRowCount: Int {
@@ -173,17 +173,17 @@ struct UsageDetailView: View {
     }
 
     var body: some View {
-        VStack(alignment: .leading, spacing: Self.sectionSpacing(hideGrassIsland: hideGrassIsland)) {
+        VStack(alignment: .leading, spacing: Self.sectionSpacing(showGrassIsland: showGrassIsland)) {
             header
                 .padding(.bottom, -4)
 
             costDashboard
-                .padding(.bottom, hideGrassIsland ? 2 : -4)
+                .padding(.bottom, showGrassIsland ? -4 : 2)
 
             if case .provider = resolvedTab {
                 if Self.usesTwoColumnLayout(
                     rowCount: usageRowCount,
-                    hideGrassIsland: hideGrassIsland,
+                    showGrassIsland: showGrassIsland,
                     panelScale: panelScale
                 ) {
                     LazyVGrid(
@@ -230,7 +230,7 @@ struct UsageDetailView: View {
                 color: TerminalColors.codexAccent,
                 report: codexCostStore.report)
         }
-        .padding(.top, 2)
+        .padding(.top, 5)
     }
 
     @ViewBuilder private func providerBreakdownRow(
@@ -240,12 +240,12 @@ struct UsageDetailView: View {
             HStack(spacing: 6) {
                 Circle().fill(color).frame(width: 6, height: 6)
                 Text(name)
-                    .panelFont(size: 12, weight: .semibold)
+                    .panelFont(size: 13, weight: .semibold)
                     .foregroundColor(TerminalColors.primaryText)
                     .lineLimit(1)
                 Spacer(minLength: 8)
                 Text(Self.breakdownDetail(report))
-                    .panelFont(size: 10)
+                    .panelFont(size: 11)
                     .foregroundColor(TerminalColors.secondaryText)
                     .lineLimit(1)
             }

@@ -137,10 +137,10 @@ enum NotchSlotContent: String, CaseIterable, Identifiable {
 
     var displayName: String {
         switch self {
-        case .latest: String(localized: "Latest Session")
-        case .ring: String(localized: "Usage")
-        case .claude: "Claude"
-        case .codex: "Codex"
+        case .latest: String(localized: "Latest Session Mascot")
+        case .ring: String(localized: "Usage Ring")
+        case .claude: String(localized: "Claude Mascot")
+        case .codex: String(localized: "Codex Mascot")
         case .nothing: String(localized: "Nothing")
         }
     }
@@ -163,6 +163,20 @@ enum NotchSlotContent: String, CaseIterable, Identifiable {
     static func conflict(_ a: NotchSlotContent, _ b: NotchSlotContent) -> Bool {
         guard a != .nothing, b != .nothing else { return false }
         return a == b || (a.isSprite && b.isSprite && (a == .latest || b == .latest))
+    }
+}
+
+enum MainUsageBarPeriod: String, CaseIterable, Identifiable {
+    case session
+    case weekly
+
+    var id: String { rawValue }
+
+    var displayName: String {
+        switch self {
+        case .session: String(localized: "Session")
+        case .weekly: String(localized: "Weekly")
+        }
     }
 }
 
@@ -203,13 +217,16 @@ enum ExpandedPanelScale: String, CaseIterable, Identifiable {
 }
 
 struct AppSettings {
-    static let hideSpriteWhenIdleKey = "hideSpriteWhenIdle"
-    static let hideGrassIslandKey = "hideGrassIsland"
+    static let showSpriteWhenIdleKey = "showSpriteWhenIdle"
+    static let islandBackgroundKey = "islandBackground"
+    static let showGrassIslandKey = "showGrassIsland"
+    static let showGitBranchAndPullRequestKey = "showGitBranchAndPullRequest"
     static let expandOnHoverKey = "expandOnHover"
     static let panelToggleShortcutKey = "panelToggleShortcut"
     static let notchLeftContentKey = "notchLeftContent"
     static let notchRightContentKey = "notchRightContent"
     static let expandedPanelScaleKey = "expandedPanelScale"
+    static let mainUsageBarPeriodKey = "mainUsageBarPeriod"
 
     private static let notificationSoundKey = "notificationSound"
     private static let notificationSoundSelectionKey = "notificationSoundSelection"
@@ -288,6 +305,15 @@ struct AppSettings {
         }
     }
 
+    static var mainUsageBarPeriod: MainUsageBarPeriod {
+        get { mainUsageBarPeriod(fromRaw: UserDefaults.standard.string(forKey: mainUsageBarPeriodKey)) }
+        set { UserDefaults.standard.set(newValue.rawValue, forKey: mainUsageBarPeriodKey) }
+    }
+
+    static func mainUsageBarPeriod(fromRaw raw: String?) -> MainUsageBarPeriod {
+        MainUsageBarPeriod(rawValue: raw ?? "") ?? .session
+    }
+
     static func expandedPanelScale(in defaults: UserDefaults) -> ExpandedPanelScale {
         ExpandedPanelScale(rawValue: defaults.string(forKey: expandedPanelScaleKey) ?? "") ?? .automatic
     }
@@ -297,14 +323,45 @@ struct AppSettings {
         set { UserDefaults.standard.set(newValue.rawValue, forKey: expandedPanelScaleKey) }
     }
 
-    static var hideSpriteWhenIdle: Bool {
-        get { UserDefaults.standard.bool(forKey: hideSpriteWhenIdleKey) }
-        set { UserDefaults.standard.set(newValue, forKey: hideSpriteWhenIdleKey) }
+    static func registerDefaults(in defaults: UserDefaults = .standard) {
+        defaults.register(defaults: [
+            showSpriteWhenIdleKey: true,
+            showGrassIslandKey: true,
+            showGitBranchAndPullRequestKey: true,
+        ])
     }
 
-    static var hideGrassIsland: Bool {
-        get { UserDefaults.standard.bool(forKey: hideGrassIslandKey) }
-        set { UserDefaults.standard.set(newValue, forKey: hideGrassIslandKey) }
+    static func showSpriteWhenIdle(in defaults: UserDefaults) -> Bool {
+        defaults.object(forKey: showSpriteWhenIdleKey) as? Bool ?? true
+    }
+
+    static var showSpriteWhenIdle: Bool {
+        get { showSpriteWhenIdle(in: .standard) }
+        set { UserDefaults.standard.set(newValue, forKey: showSpriteWhenIdleKey) }
+    }
+
+    static func islandBackground(in defaults: UserDefaults) -> IslandBackground {
+        IslandBackground.resolve(defaults.string(forKey: islandBackgroundKey))
+    }
+
+    static var islandBackground: IslandBackground {
+        get { islandBackground(in: .standard) }
+        set {
+            if newValue == .automatic, islandBackground != .automatic {
+                IslandBackgroundRotation.shared.restart()
+            }
+            UserDefaults.standard.set(newValue.rawValue, forKey: islandBackgroundKey)
+        }
+    }
+
+    static var showGrassIsland: Bool {
+        get { UserDefaults.standard.object(forKey: showGrassIslandKey) as? Bool ?? true }
+        set { UserDefaults.standard.set(newValue, forKey: showGrassIslandKey) }
+    }
+
+    static var showGitBranchAndPullRequest: Bool {
+        get { UserDefaults.standard.object(forKey: showGitBranchAndPullRequestKey) as? Bool ?? true }
+        set { UserDefaults.standard.set(newValue, forKey: showGitBranchAndPullRequestKey) }
     }
 
     static var expandOnHover: Bool {

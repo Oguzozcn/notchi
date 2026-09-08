@@ -20,6 +20,25 @@ final class SessionStore {
     private var resolveCodexCompactionSignals: @Sendable ([String]) -> [String: CodexCompactionSignal] = { threadIds in
         CodexCompactionSignalResolver.latestSignals(threadIds: threadIds)
     }
+    private var resolveCodexPermissionMode: @Sendable (String) -> String? = { transcriptPath in
+        CodexPermissionModeReader.shared.mode(forTranscriptAt: transcriptPath)
+    }
+    private var resolveGitPullRequest: @Sendable (String, String) -> GitPullRequestLookup = { branch, cwd in
+        GitPullRequestResolver.shared.lookup(forBranch: branch, repositoryAt: cwd)
+    }
+    private var resolveHostBundleIdentifier: @MainActor (pid_t) -> String? = { processId in
+        TerminalJumpService.shared.hostBundleIdentifier(hosting: processId)
+    }
+    private var invalidateGitPullRequestCache: @Sendable (String) -> Void = { cwd in
+        GitPullRequestResolver.shared.invalidate(repositoryAt: cwd)
+    }
+    private var gitBranchGenerations: [ProviderSessionKey: Int] = [:]
+    private var codexPermissionModeGenerations: [ProviderSessionKey: Int] = [:]
+    private var armedPullRequestInvalidations: [ProviderSessionKey: Set<String>] = [:]
+    private static let anyToolUseArm = ""
+    private var gitRefreshTask: Task<Void, Never>?
+    private var gitRefreshInterval: Duration = .seconds(30)
+    private static let gitRefreshActivityWindow: TimeInterval = 900
 
     private init() {}
 
@@ -121,12 +140,44 @@ final class SessionStore {
         let isProcessing = Self.isProcessingStatus(event.status)
         session.updateProcessingState(isProcessing: isProcessing)
 
-        if let mode = event.permissionMode {
+        if event.provider == .codex {
+            refreshCodexPermissionMode(
+                for: session,
+                sessionKey: event.sessionKey,
+                transcriptPath: event.transcriptPath ?? session.codexTranscriptPath
+            )
+        } else if let mode = event.permissionMode {
             session.updatePermissionMode(mode)
         }
+        let eventCommandChangesPullRequests = (event.toolInput?["command"]?.value as? String)
+            .map(Self.commandLikelyChangedPullRequests) ?? false
+        switch event.event {
+        case .preToolUse where eventCommandChangesPullRequests:
+            armedPullRequestInvalidations[event.sessionKey, default: []]
+                .insert(event.toolUseId ?? Self.anyToolUseArm)
+        case .postToolUse:
+            var consumedArm = false
+            if var armed = armedPullRequestInvalidations[event.sessionKey] {
+                consumedArm = armed.remove(event.toolUseId ?? Self.anyToolUseArm) != nil
+                armedPullRequestInvalidations[event.sessionKey] = armed.isEmpty ? nil : armed
+            }
+            if consumedArm || eventCommandChangesPullRequests {
+                invalidateGitPullRequestCache(event.cwd)
+            }
+        default:
+            break
+        }
+        refreshGitBranch(for: session, sessionKey: event.sessionKey, cwd: event.cwd)
+        ensureGitRefreshLoop()
 
+        let previousHostProcessId = session.hostProcessId
         session.updateClaudeRuntime(processId: event.claudeProcessId)
         session.updateCodexRuntime(processId: event.codexProcessId, origin: event.codexOrigin)
+        if let hostProcessId = session.hostProcessId,
+           hostProcessId != previousHostProcessId,
+           let processId = pid_t(exactly: hostProcessId) {
+            session.updateHostBundleIdentifier(resolveHostBundleIdentifier(processId))
+        }
         if event.provider == .codex, let transcriptPath = event.transcriptPath {
             session.updateCodexThreadMetadata(
                 transcriptPath: transcriptPath,
@@ -137,7 +188,12 @@ final class SessionStore {
         switch event.event {
         case .userPromptSubmitted:
             if event.userPrompt != nil || event.userPromptHasAttachments {
-                session.recordUserPrompt(event.userPrompt, hasAttachments: event.userPromptHasAttachments)
+                session.recordUserPrompt(
+                    event.userPrompt,
+                    hasAttachments: event.userPromptHasAttachments,
+                    imageAttachments: event.userPromptImageAttachments,
+                    hasOtherAttachments: event.userPromptHasOtherAttachments
+                )
             }
             session.clearRecentEvents()
             session.clearAssistantMessages()
@@ -220,7 +276,7 @@ final class SessionStore {
     func displayTitle(for session: SessionData) -> String {
         let label = displaySessionLabel(for: session)
         if let detail = session.codexTitle ?? session.lastUserPrompt {
-            return "\(label) - \(detail)"
+            return "\(label) - \(detail.truncatedForPrompt())"
         }
         return label
     }
@@ -258,8 +314,79 @@ final class SessionStore {
         return session
     }
 
+    nonisolated static func commandLikelyChangedPullRequests(_ command: String) -> Bool {
+        let gitPush = #"(^|[\s;&|(])git(\s+(-C\s+\S+|-\S+))*\s+push\b"#
+        let ghPr = #"(^|[\s;&|(])gh\s+pr\b"#
+        return command.range(of: gitPush, options: .regularExpression) != nil
+            || command.range(of: ghPr, options: .regularExpression) != nil
+    }
+
+    private func ensureGitRefreshLoop() {
+        guard gitRefreshTask == nil else { return }
+        gitRefreshTask = Task {
+            while !Task.isCancelled {
+                try? await Task.sleep(for: gitRefreshInterval)
+                guard !Task.isCancelled else { return }
+                if sessions.isEmpty {
+                    gitRefreshTask = nil
+                    return
+                }
+                let activityCutoff = Date().addingTimeInterval(-Self.gitRefreshActivityWindow)
+                for (sessionKey, session) in sessions where session.lastActivity > activityCutoff {
+                    refreshGitBranch(for: session, sessionKey: sessionKey, cwd: session.cwd)
+                }
+            }
+        }
+    }
+
+    private func refreshGitBranch(for session: SessionData, sessionKey: ProviderSessionKey, cwd: String) {
+        let generation = (gitBranchGenerations[sessionKey] ?? 0) + 1
+        gitBranchGenerations[sessionKey] = generation
+        let resolvePullRequest = resolveGitPullRequest
+        Task.detached(priority: .utility) {
+            let branch = GitBranchReader.branch(forRepositoryAt: cwd)
+            await MainActor.run {
+                guard self.sessions[sessionKey] === session,
+                      self.gitBranchGenerations[sessionKey] == generation else { return }
+                if session.gitBranch != branch {
+                    session.updateGitPullRequest(nil)
+                }
+                session.updateGitBranch(branch)
+            }
+            let lookup = branch.map { resolvePullRequest($0, cwd) } ?? .resolved(nil)
+            await MainActor.run {
+                guard self.sessions[sessionKey] === session,
+                      session.gitBranch == branch,
+                      case .resolved(let pullRequest) = lookup else { return }
+                session.updateGitPullRequest(pullRequest)
+            }
+        }
+    }
+
+    private func refreshCodexPermissionMode(
+        for session: SessionData,
+        sessionKey: ProviderSessionKey,
+        transcriptPath: String?
+    ) {
+        guard let transcriptPath, !transcriptPath.isEmpty else { return }
+        let generation = (codexPermissionModeGenerations[sessionKey] ?? 0) + 1
+        codexPermissionModeGenerations[sessionKey] = generation
+        let resolve = resolveCodexPermissionMode
+        Task.detached(priority: .utility) {
+            guard let mode = resolve(transcriptPath) else { return }
+            await MainActor.run {
+                guard self.sessions[sessionKey] === session,
+                      self.codexPermissionModeGenerations[sessionKey] == generation else { return }
+                session.updatePermissionMode(mode)
+            }
+        }
+    }
+
     private func removeSession(_ sessionKey: ProviderSessionKey) {
         sessions.removeValue(forKey: sessionKey)
+        gitBranchGenerations.removeValue(forKey: sessionKey)
+        codexPermissionModeGenerations.removeValue(forKey: sessionKey)
+        armedPullRequestInvalidations.removeValue(forKey: sessionKey)
         recomputeDisplaySessionNumbers()
         postActiveSessionCountChange()
 
@@ -556,7 +683,47 @@ final class SessionStore {
         resolveCodexCompactionSignals = resolver
     }
 
+    func setCodexPermissionModeResolverForTesting(_ resolver: @escaping @Sendable (String) -> String?) {
+        resolveCodexPermissionMode = resolver
+    }
+
+    func setGitPullRequestResolverForTesting(_ resolver: @escaping @Sendable (String, String) -> GitPullRequestLookup) {
+        resolveGitPullRequest = resolver
+    }
+
+    func setGitPullRequestCacheInvalidatorForTesting(_ invalidator: @escaping @Sendable (String) -> Void) {
+        invalidateGitPullRequestCache = invalidator
+    }
+
+    func setHostBundleIdentifierResolverForTesting(_ resolver: @escaping @MainActor (pid_t) -> String?) {
+        resolveHostBundleIdentifier = resolver
+    }
+
+    func resetHostBundleIdentifierResolverForTesting() {
+        resolveHostBundleIdentifier = { processId in
+            TerminalJumpService.shared.hostBundleIdentifier(hosting: processId)
+        }
+    }
+
+    func setGitRefreshIntervalForTesting(_ interval: Duration) {
+        gitRefreshInterval = interval
+        gitRefreshTask?.cancel()
+        gitRefreshTask = nil
+    }
+
     func resetTestingHooks() {
+        gitRefreshInterval = .seconds(30)
+        gitRefreshTask?.cancel()
+        gitRefreshTask = nil
+        resolveCodexPermissionMode = { transcriptPath in
+            CodexPermissionModeReader.shared.mode(forTranscriptAt: transcriptPath)
+        }
+        resolveGitPullRequest = { branch, cwd in
+            GitPullRequestResolver.shared.lookup(forBranch: branch, repositoryAt: cwd)
+        }
+        invalidateGitPullRequestCache = { cwd in
+            GitPullRequestResolver.shared.invalidate(repositoryAt: cwd)
+        }
         resolveCodexMetadata = { transcriptPaths in
             CodexThreadMetadataResolver.metadata(forTranscriptPaths: transcriptPaths)
         }

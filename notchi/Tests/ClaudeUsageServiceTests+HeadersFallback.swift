@@ -58,6 +58,25 @@ extension ClaudeUsageServiceTests {
         XCTAssertEqual(scheduler.intervals, [60])
     }
 
+    func testWeeklyUsageIsHeldOverWhileHeadersFallbackIsActive() async throws {
+        let recorder = RequestRecorder()
+        let (service, _) = makeService(
+            fetchUsage: oauth403ThenHeaders(
+                recorder: recorder,
+                oauthResponse: { (Data(), self.makeResponse(statusCode: 403)) }
+            ) { _, _ in
+                (Data(), self.makeHeadersResponse(
+                    utilization: "0.42",
+                    reset: "2099-01-01T01:00:00Z"
+                ))
+            }
+        )
+        await service.performFetch(with: "token")
+
+        XCTAssertFalse(service.isUsageStale)
+        XCTAssertTrue(service.isWeeklyUsageHeldOver)
+    }
+
     func testOAuth403HeadersFallbackDoesNotPersist429RecoveryState() async throws {
         let scheduler = PollSchedulerSpy()
         var savedSnapshots: [ClaudeUsageRecoverySnapshot] = []

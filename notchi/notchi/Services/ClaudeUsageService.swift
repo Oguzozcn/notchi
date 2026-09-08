@@ -695,6 +695,10 @@ final class ClaudeUsageService {
     var isConnected = false
     var isUsageStale = false
     var isUsingHeadersFallback: Bool { isHeadersFallbackActive }
+
+    // Headers refreshes only carry session usage, so in either headers mode (backoff-driven or
+    // enterprise preferred) weekly data is held over from the last OAuth success.
+    var isWeeklyUsageHeldOver: Bool { isUsageStale || isHeadersFallbackActive || preferHeadersFallback }
     var hasUsageData: Bool {
         UsageMetrics.claudeHasData(
             usage: currentUsage,
@@ -1859,7 +1863,7 @@ final class ClaudeUsageService {
         recoveryAction = .retry
         let roundedDelay = Int(ceil(remaining))
 
-        if currentUsage == nil {
+        if currentUsage == nil, currentWeeklyUsage == nil, currentModelUsage == nil {
             error = String(localized: "Rate limited, retrying in \(roundedDelay)s")
             statusMessage = nil
             isUsageStale = false
@@ -2045,7 +2049,7 @@ final class ClaudeUsageService {
     private func presentRetryableIssue(noUsageMessage: String, staleMessage: String) {
         clearPendingResumeReconnect()
         recoveryAction = .retry
-        if currentUsage == nil {
+        if currentUsage == nil, currentWeeklyUsage == nil, currentModelUsage == nil {
             error = noUsageMessage
             statusMessage = nil
             isUsageStale = false
@@ -2060,7 +2064,7 @@ final class ClaudeUsageService {
         clearPendingResumeReconnect()
         recoveryAction = .reconnect
         isConnected = false
-        if currentUsage == nil {
+        if currentUsage == nil, currentWeeklyUsage == nil, currentModelUsage == nil {
             error = message
             statusMessage = nil
             isUsageStale = false
@@ -2075,7 +2079,7 @@ final class ClaudeUsageService {
         clearPendingResumeReconnect()
         recoveryAction = .waitForClaudeCode
         isConnected = false
-        if currentUsage == nil {
+        if currentUsage == nil, currentWeeklyUsage == nil, currentModelUsage == nil {
             error = message
             statusMessage = nil
             isUsageStale = false

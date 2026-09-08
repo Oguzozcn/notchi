@@ -19,17 +19,27 @@ extension NSScreen {
         safeAreaInsets.top > 0
     }
 
+    static let nonNotchWidth: CGFloat = 224
+    static let fallbackMenuBarHeight: CGFloat = 24
+
+    static func nonNotchSize(menuBarHeight: CGFloat) -> CGSize {
+        CGSize(
+            width: nonNotchWidth,
+            height: menuBarHeight > 0 ? menuBarHeight : fallbackMenuBarHeight
+        )
+    }
+
     /// Calculates the notch dimensions for this screen
     var notchSize: CGSize {
+        let menuBarHeight = frame.maxY - visibleFrame.maxY
         guard hasNotch else {
-            return CGSize(width: 224, height: 38)
+            return Self.nonNotchSize(menuBarHeight: menuBarHeight)
         }
 
         let fullWidth = frame.width
         let leftPadding = auxiliaryTopLeftArea?.width ?? 0
         let rightPadding = auxiliaryTopRightArea?.width ?? 0
         let notchWidth = fullWidth - leftPadding - rightPadding + 4
-        let menuBarHeight = frame.maxY - visibleFrame.maxY
         let notchHeight = max(safeAreaInsets.top, menuBarHeight)
 
         return CGSize(width: notchWidth, height: notchHeight)

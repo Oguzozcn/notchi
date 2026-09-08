@@ -10,6 +10,349 @@ final class SessionStoreTests: XCTestCase {
         try await super.tearDown()
     }
 
+    func testCodexPermissionModeComesFromRolloutNotHookPayload() async throws {
+        let rollout = FileManager.default.temporaryDirectory
+            .appendingPathComponent("SessionStoreCodexMode-\(UUID().uuidString).jsonl")
+        try #"{"type":"turn_context","payload":{"approval_policy":"on-request","sandbox_policy":{"type":"read-only"}}}"#
+            .appending("\n")
+            .write(to: rollout, atomically: true, encoding: .utf8)
+        addTeardownBlock { try? FileManager.default.removeItem(at: rollout) }
+
+        let session = SessionStore.shared.process(makeEvent(
+            sessionId: "codex-mode-\(UUID().uuidString)",
+            provider: .codex,
+            transcriptPath: rollout.path,
+            event: .userPromptSubmitted,
+            status: "processing",
+            permissionMode: "default"
+        ))
+
+        XCTAssertEqual(session.permissionMode, "default", "hook payload mode must not be applied for Codex")
+
+        for _ in 0..<100 where session.permissionMode == "default" {
+            try await Task.sleep(for: .milliseconds(10))
+        }
+        XCTAssertEqual(session.permissionMode, CodexPermissionMode.readOnly)
+        XCTAssertEqual(session.currentModeDisplay, "Read Only")
+    }
+
+    func testStaleCodexPermissionModeScanDoesNotOverwriteNewerResult() async throws {
+        let store = SessionStore.shared
+        store.setCodexPermissionModeResolverForTesting { transcriptPath in
+            if transcriptPath.hasSuffix("slow.jsonl") {
+                Thread.sleep(forTimeInterval: 0.3)
+                return CodexPermissionMode.readOnly
+            }
+            return CodexPermissionMode.fullAccess
+        }
+        let sessionId = "codex-stale-\(UUID().uuidString)"
+
+        let session = store.process(makeEvent(
+            sessionId: sessionId,
+            provider: .codex,
+            transcriptPath: "/tmp/\(sessionId)/slow.jsonl",
+            event: .userPromptSubmitted,
+            status: "processing"
+        ))
+        _ = store.process(makeEvent(
+            sessionId: sessionId,
+            provider: .codex,
+            transcriptPath: "/tmp/\(sessionId)/fast.jsonl",
+            event: .stop,
+            status: "waiting_for_input"
+        ))
+
+        try await Task.sleep(for: .milliseconds(600))
+        XCTAssertEqual(session.permissionMode, CodexPermissionMode.fullAccess)
+    }
+
+    func testSwitchingBranchClearsPullRequestWhileLookupIsPending() async throws {
+        let repo = FileManager.default.temporaryDirectory
+            .appendingPathComponent("SessionStorePRSwitch-\(UUID().uuidString)")
+        let gitDir = repo.appendingPathComponent(".git")
+        try FileManager.default.createDirectory(at: gitDir, withIntermediateDirectories: true)
+        try "ref: refs/heads/feat/a\n"
+            .write(to: gitDir.appendingPathComponent("HEAD"), atomically: true, encoding: .utf8)
+        addTeardownBlock { try? FileManager.default.removeItem(at: repo) }
+
+        let prForA = GitPullRequest(number: 7, url: "https://github.com/sk-ruban/notchi/pull/7")
+        SessionStore.shared.setGitPullRequestResolverForTesting { branch, _ in
+            branch == "feat/a" ? .resolved(prForA) : .pending
+        }
+
+        let sessionId = "pr-switch-\(UUID().uuidString)"
+        let session = SessionStore.shared.process(makeEvent(
+            sessionId: sessionId,
+            cwd: repo.path,
+            event: .userPromptSubmitted,
+            status: "processing"
+        ))
+        for _ in 0..<100 where session.gitPullRequest == nil {
+            try await Task.sleep(for: .milliseconds(10))
+        }
+        XCTAssertEqual(session.gitPullRequest, prForA)
+
+        try "ref: refs/heads/feat/b\n"
+            .write(to: gitDir.appendingPathComponent("HEAD"), atomically: true, encoding: .utf8)
+        _ = SessionStore.shared.process(makeEvent(
+            sessionId: sessionId,
+            cwd: repo.path,
+            event: .stop,
+            status: "waiting_for_input"
+        ))
+        for _ in 0..<100 where session.gitBranch != "feat/b" {
+            try await Task.sleep(for: .milliseconds(10))
+        }
+        XCTAssertEqual(session.gitBranch, "feat/b")
+        XCTAssertNil(session.gitPullRequest, "old branch's PR must not stay paired with the new branch")
+    }
+
+    func testSlowLookupStillPublishesWhenALaterEventArrivesFirst() async throws {
+        let repo = FileManager.default.temporaryDirectory
+            .appendingPathComponent("SessionStorePRRace-\(UUID().uuidString)")
+        let gitDir = repo.appendingPathComponent(".git")
+        try FileManager.default.createDirectory(at: gitDir, withIntermediateDirectories: true)
+        try "ref: refs/heads/feat/race\n"
+            .write(to: gitDir.appendingPathComponent("HEAD"), atomically: true, encoding: .utf8)
+        addTeardownBlock { try? FileManager.default.removeItem(at: repo) }
+
+        let pr = GitPullRequest(number: 9, url: "https://github.com/sk-ruban/notchi/pull/9")
+        let firstLookup = FirstCallGate()
+        SessionStore.shared.setGitPullRequestResolverForTesting { _, _ in
+            if firstLookup.claim() {
+                Thread.sleep(forTimeInterval: 0.2)
+                return .resolved(pr)
+            }
+            return .pending
+        }
+
+        let sessionId = "pr-race-\(UUID().uuidString)"
+        let session = SessionStore.shared.process(makeEvent(
+            sessionId: sessionId,
+            cwd: repo.path,
+            event: .userPromptSubmitted,
+            status: "processing"
+        ))
+        for _ in 0..<100 where !firstLookup.hasClaimed {
+            try await Task.sleep(for: .milliseconds(10))
+        }
+        XCTAssertTrue(firstLookup.hasClaimed, "the first event's lookup must be in flight before the second event fires")
+        _ = SessionStore.shared.process(makeEvent(
+            sessionId: sessionId,
+            cwd: repo.path,
+            event: .stop,
+            status: "waiting_for_input"
+        ))
+
+        for _ in 0..<100 where session.gitPullRequest == nil {
+            try await Task.sleep(for: .milliseconds(10))
+        }
+        XCTAssertEqual(session.gitPullRequest, pr, "slow lookup must publish even after a later event bumped the generation")
+    }
+
+    func testPushLikeToolCommandsInvalidateThePullRequestCache() {
+        let invalidated = InvalidationRecorder()
+        SessionStore.shared.setGitPullRequestCacheInvalidatorForTesting { cwd in
+            invalidated.record(cwd)
+        }
+        let sessionId = "pr-invalidate-\(UUID().uuidString)"
+
+        _ = SessionStore.shared.process(makeEvent(
+            sessionId: sessionId,
+            cwd: "/repo",
+            event: .postToolUse,
+            status: "processing",
+            tool: "Bash",
+            toolInput: ["command": AnyCodable("git push -u origin feat/x && gh pr create")]
+        ))
+        XCTAssertEqual(invalidated.values, ["/repo"])
+
+        _ = SessionStore.shared.process(makeEvent(
+            sessionId: sessionId,
+            cwd: "/repo",
+            event: .postToolUse,
+            status: "processing",
+            tool: "Bash",
+            toolInput: ["command": AnyCodable("git status")]
+        ))
+        XCTAssertEqual(invalidated.values, ["/repo"], "a read-only command must not invalidate")
+    }
+
+    func testCodexStylePushInvalidatesViaPreToolUseCommandAndPostToolUseCompletion() {
+        let invalidated = InvalidationRecorder()
+        SessionStore.shared.setGitPullRequestCacheInvalidatorForTesting { cwd in
+            invalidated.record(cwd)
+        }
+        let sessionId = "pr-armed-\(UUID().uuidString)"
+
+        _ = SessionStore.shared.process(makeEvent(
+            sessionId: sessionId,
+            provider: .codex,
+            cwd: "/repo",
+            event: .preToolUse,
+            status: "processing",
+            tool: "shell",
+            toolInput: ["command": AnyCodable("git push origin feat/x")]
+        ))
+        XCTAssertEqual(invalidated.values, [], "invalidation must wait until the command finished")
+
+        _ = SessionStore.shared.process(makeEvent(
+            sessionId: sessionId,
+            provider: .codex,
+            cwd: "/repo",
+            event: .postToolUse,
+            status: "processing",
+            tool: "shell"
+        ))
+        XCTAssertEqual(invalidated.values, ["/repo"])
+
+        _ = SessionStore.shared.process(makeEvent(
+            sessionId: sessionId,
+            provider: .codex,
+            cwd: "/repo",
+            event: .postToolUse,
+            status: "processing",
+            tool: "shell"
+        ))
+        XCTAssertEqual(invalidated.values, ["/repo"], "the armed invalidation must fire only once")
+    }
+
+    func testUnrelatedOverlappingCompletionDoesNotConsumeThePushInvalidation() {
+        let invalidated = InvalidationRecorder()
+        SessionStore.shared.setGitPullRequestCacheInvalidatorForTesting { cwd in
+            invalidated.record(cwd)
+        }
+        let sessionId = "pr-overlap-\(UUID().uuidString)"
+
+        _ = SessionStore.shared.process(makeEvent(
+            sessionId: sessionId,
+            provider: .codex,
+            cwd: "/repo",
+            event: .preToolUse,
+            status: "processing",
+            tool: "shell",
+            toolUseId: "push-call",
+            toolInput: ["command": AnyCodable("git push origin feat/x")]
+        ))
+        _ = SessionStore.shared.process(makeEvent(
+            sessionId: sessionId,
+            provider: .codex,
+            cwd: "/repo",
+            event: .postToolUse,
+            status: "processing",
+            tool: "shell",
+            toolUseId: "unrelated-call"
+        ))
+        XCTAssertEqual(invalidated.values, [], "an unrelated completion must not consume the push arm")
+
+        _ = SessionStore.shared.process(makeEvent(
+            sessionId: sessionId,
+            provider: .codex,
+            cwd: "/repo",
+            event: .postToolUse,
+            status: "processing",
+            tool: "shell",
+            toolUseId: "push-call"
+        ))
+        XCTAssertEqual(invalidated.values, ["/repo"], "the push completion itself must invalidate")
+    }
+
+    func testCommandLikelyChangedPullRequestsMatchesPushAndGhPrOnly() {
+        XCTAssertTrue(SessionStore.commandLikelyChangedPullRequests("git push origin main"))
+        XCTAssertTrue(SessionStore.commandLikelyChangedPullRequests("git   push"))
+        XCTAssertTrue(SessionStore.commandLikelyChangedPullRequests("git -C /repo push"))
+        XCTAssertTrue(SessionStore.commandLikelyChangedPullRequests("git --no-pager push --force-with-lease"))
+        XCTAssertTrue(SessionStore.commandLikelyChangedPullRequests("cd /repo && git push"))
+        XCTAssertTrue(SessionStore.commandLikelyChangedPullRequests("gh pr merge 118 --rebase"))
+        XCTAssertFalse(SessionStore.commandLikelyChangedPullRequests("git pull --rebase"))
+        XCTAssertFalse(SessionStore.commandLikelyChangedPullRequests("gh project list"))
+        XCTAssertFalse(SessionStore.commandLikelyChangedPullRequests("echo \"git push\""))
+        XCTAssertFalse(SessionStore.commandLikelyChangedPullRequests("echo pushed"))
+    }
+
+    func testPeriodicSweepPicksUpANewPullRequestWithoutFurtherEvents() async throws {
+        let repo = FileManager.default.temporaryDirectory
+            .appendingPathComponent("SessionStorePRSweep-\(UUID().uuidString)")
+        let gitDir = repo.appendingPathComponent(".git")
+        try FileManager.default.createDirectory(at: gitDir, withIntermediateDirectories: true)
+        try "ref: refs/heads/feat/sweep\n"
+            .write(to: gitDir.appendingPathComponent("HEAD"), atomically: true, encoding: .utf8)
+        addTeardownBlock { try? FileManager.default.removeItem(at: repo) }
+
+        let pr = GitPullRequest(number: 118, url: "https://github.com/sk-ruban/notchi/pull/118")
+        let lookupCount = Counter()
+        SessionStore.shared.setGitRefreshIntervalForTesting(.milliseconds(50))
+        SessionStore.shared.setGitPullRequestResolverForTesting { _, _ in
+            lookupCount.increment()
+            return .resolved(lookupCount.value >= 2 ? pr : nil)
+        }
+
+        let session = SessionStore.shared.process(makeEvent(
+            sessionId: "pr-sweep-\(UUID().uuidString)",
+            cwd: repo.path,
+            event: .userPromptSubmitted,
+            status: "processing"
+        ))
+
+        for _ in 0..<200 where session.gitPullRequest == nil {
+            try await Task.sleep(for: .milliseconds(10))
+        }
+        XCTAssertEqual(session.gitPullRequest, pr, "the periodic sweep must publish a PR that appears after the last event")
+        XCTAssertGreaterThanOrEqual(lookupCount.value, 2)
+    }
+
+    func testGitPullRequestIsResolvedForTheSessionBranch() async throws {
+        let repo = FileManager.default.temporaryDirectory
+            .appendingPathComponent("SessionStorePR-\(UUID().uuidString)")
+        let gitDir = repo.appendingPathComponent(".git")
+        try FileManager.default.createDirectory(at: gitDir, withIntermediateDirectories: true)
+        try "ref: refs/heads/feat/pr-label\n"
+            .write(to: gitDir.appendingPathComponent("HEAD"), atomically: true, encoding: .utf8)
+        addTeardownBlock { try? FileManager.default.removeItem(at: repo) }
+
+        let expected = GitPullRequest(number: 116, url: "https://github.com/sk-ruban/notchi/pull/116")
+        SessionStore.shared.setGitPullRequestResolverForTesting { branch, _ in
+            .resolved(branch == "feat/pr-label" ? expected : nil)
+        }
+
+        let session = SessionStore.shared.process(makeEvent(
+            sessionId: "pr-label-\(UUID().uuidString)",
+            cwd: repo.path,
+            event: .userPromptSubmitted,
+            status: "processing"
+        ))
+
+        for _ in 0..<100 where session.gitPullRequest == nil {
+            try await Task.sleep(for: .milliseconds(10))
+        }
+        XCTAssertEqual(session.gitPullRequest, expected)
+        XCTAssertEqual(session.gitBranch, "feat/pr-label")
+    }
+
+    func testGitBranchIsResolvedOffMainActorAfterProcessingEvent() async throws {
+        let repo = FileManager.default.temporaryDirectory
+            .appendingPathComponent("SessionStoreGitBranch-\(UUID().uuidString)")
+        let gitDir = repo.appendingPathComponent(".git")
+        try FileManager.default.createDirectory(at: gitDir, withIntermediateDirectories: true)
+        try "ref: refs/heads/feat/async-branch\n"
+            .write(to: gitDir.appendingPathComponent("HEAD"), atomically: true, encoding: .utf8)
+        addTeardownBlock { try? FileManager.default.removeItem(at: repo) }
+
+        let session = SessionStore.shared.process(makeEvent(
+            sessionId: "git-branch-\(UUID().uuidString)",
+            cwd: repo.path,
+            event: .userPromptSubmitted,
+            status: "processing"
+        ))
+
+        XCTAssertNil(session.gitBranch, "branch must not be read synchronously on the main actor")
+
+        for _ in 0..<100 where session.gitBranch == nil {
+            try await Task.sleep(for: .milliseconds(10))
+        }
+        XCTAssertEqual(session.gitBranch, "feat/async-branch")
+    }
+
     func testUserPromptSubmitClearsPreviousTurnToolEventsAndAssistantMessages() {
         let sessionId = "turn-reset-\(UUID().uuidString)"
         let store = SessionStore.shared
@@ -46,6 +389,59 @@ final class SessionStoreTests: XCTestCase {
         XCTAssertTrue(session.recentAssistantMessages.isEmpty)
         XCTAssertEqual(session.lastUserPrompt, "second")
         XCTAssertFalse(session.lastUserPromptHasAttachments)
+    }
+
+    func testHarnessInjectedPromptsKeepThePreviousUserPrompt() {
+        let store = SessionStore.shared
+        let sessionId = "injected-prompt-\(UUID().uuidString)"
+
+        let session = store.process(makeEvent(
+            sessionId: sessionId,
+            event: .userPromptSubmitted,
+            status: "processing",
+            userPrompt: "fix the panel please"
+        ))
+        XCTAssertEqual(session.lastUserPrompt, "fix the panel please")
+
+        _ = store.process(makeEvent(
+            sessionId: sessionId,
+            event: .userPromptSubmitted,
+            status: "processing",
+            userPrompt: "<task-notification>\n<task-id>abc</task-id>\n</task-notification>"
+        ))
+        XCTAssertEqual(session.lastUserPrompt, "fix the panel please")
+
+        _ = store.process(makeEvent(
+            sessionId: sessionId,
+            event: .userPromptSubmitted,
+            status: "processing",
+            userPrompt: "[SYSTEM NOTIFICATION - NOT USER INPUT] something finished"
+        ))
+        XCTAssertEqual(session.lastUserPrompt, "fix the panel please")
+    }
+
+    func testIsHarnessInjectedPromptMatchesMarkersOnlyAtTheStart() {
+        XCTAssertTrue(SessionData.isHarnessInjectedPrompt("<task-notification>\nstuff"))
+        XCTAssertTrue(SessionData.isHarnessInjectedPrompt("  <system-reminder>\nstuff"))
+        XCTAssertFalse(SessionData.isHarnessInjectedPrompt("tell me about <task-notification> blocks"))
+        XCTAssertFalse(SessionData.isHarnessInjectedPrompt(nil))
+        XCTAssertFalse(SessionData.isHarnessInjectedPrompt("normal prompt"))
+    }
+
+    func testLongPromptsAreStoredInFullButTruncatedInTheDisplayTitle() {
+        let store = SessionStore.shared
+        let longPrompt = String(repeating: "a", count: 500)
+        let session = store.process(makeEvent(
+            sessionId: "long-prompt-\(UUID().uuidString)",
+            event: .userPromptSubmitted,
+            status: "processing",
+            userPrompt: longPrompt
+        ))
+
+        XCTAssertEqual(session.lastUserPrompt, longPrompt)
+        let title = store.displayTitle(for: session)
+        XCTAssertTrue(title.hasSuffix("..."))
+        XCTAssertLessThan(title.count, 130)
     }
 
     func testUserPromptSubmitTracksAttachmentStateSeparatelyFromPromptText() {
@@ -89,6 +485,114 @@ final class SessionStoreTests: XCTestCase {
         XCTAssertNil(session.lastUserPrompt)
         XCTAssertTrue(session.lastUserPromptHasAttachments)
         XCTAssertNotNil(session.promptSubmitTime)
+    }
+
+    func testProcessResolvesHostBundleIdentifierOnceForNewProcessId() {
+        let store = SessionStore.shared
+        var resolvedProcessIds: [pid_t] = []
+        store.setHostBundleIdentifierResolverForTesting { processId in
+            resolvedProcessIds.append(processId)
+            return "com.t3tools.t3code"
+        }
+        defer { store.resetHostBundleIdentifierResolverForTesting() }
+        let sessionId = "host-resolution-\(UUID().uuidString)"
+
+        let session = store.process(makeEvent(
+            sessionId: sessionId,
+            provider: .codex,
+            event: .sessionStarted,
+            status: "waiting_for_input",
+            codexProcessId: 42
+        ))
+        _ = store.process(makeEvent(
+            sessionId: sessionId,
+            provider: .codex,
+            event: .stop,
+            status: "waiting_for_input",
+            codexProcessId: 42
+        ))
+
+        XCTAssertEqual(session.hostBundleIdentifier, "com.t3tools.t3code")
+        XCTAssertEqual(resolvedProcessIds, [42])
+    }
+
+    func testProcessRejectsProcessIdsThatDoNotFitInPid() {
+        let store = SessionStore.shared
+        var resolvedProcessIds: [pid_t] = []
+        store.setHostBundleIdentifierResolverForTesting { processId in
+            resolvedProcessIds.append(processId)
+            return "com.t3tools.t3code"
+        }
+        defer { store.resetHostBundleIdentifierResolverForTesting() }
+        let outOfRangeProcessId = Int(Int32.max) + 1
+
+        let codexSession = store.process(makeEvent(
+            sessionId: "oversized-codex-pid-\(UUID().uuidString)",
+            provider: .codex,
+            event: .sessionStarted,
+            status: "waiting_for_input",
+            codexProcessId: outOfRangeProcessId
+        ))
+        let claudeSession = store.process(makeEvent(
+            sessionId: "oversized-claude-pid-\(UUID().uuidString)",
+            event: .sessionStarted,
+            status: "waiting_for_input",
+            claudeProcessId: outOfRangeProcessId
+        ))
+
+        XCTAssertNil(codexSession.codexProcessId)
+        XCTAssertNil(claudeSession.claudeProcessId)
+        XCTAssertNil(codexSession.hostBundleIdentifier)
+        XCTAssertNil(claudeSession.hostBundleIdentifier)
+        XCTAssertTrue(resolvedProcessIds.isEmpty)
+    }
+
+    func testProcessClearsHostBundleIdentifierWhenNewProcessHasNoSupportedHost() {
+        let store = SessionStore.shared
+        store.setHostBundleIdentifierResolverForTesting { processId in
+            processId == 42 ? "com.t3tools.t3code" : nil
+        }
+        defer { store.resetHostBundleIdentifierResolverForTesting() }
+        let sessionId = "host-migration-\(UUID().uuidString)"
+
+        let session = store.process(makeEvent(
+            sessionId: sessionId,
+            provider: .codex,
+            event: .sessionStarted,
+            status: "waiting_for_input",
+            codexProcessId: 42
+        ))
+        XCTAssertEqual(session.hostBundleIdentifier, "com.t3tools.t3code")
+
+        _ = store.process(makeEvent(
+            sessionId: sessionId,
+            provider: .codex,
+            event: .stop,
+            status: "waiting_for_input",
+            codexProcessId: 43
+        ))
+
+        XCTAssertNil(session.hostBundleIdentifier)
+    }
+
+    func testUserPromptStoresImageAttachments() {
+        let store = SessionStore.shared
+        let attachment = UserPromptImageAttachment(
+            displayName: "screenshot.png",
+            path: "/tmp/screenshot.png"
+        )
+
+        let session = store.process(makeEvent(
+            sessionId: "image-attachment-\(UUID().uuidString)",
+            event: .userPromptSubmitted,
+            status: "processing",
+            userPrompt: "look at this",
+            userPromptHasAttachments: true,
+            userPromptImageAttachments: [attachment]
+        ))
+
+        XCTAssertEqual(session.lastUserPrompt, "look at this")
+        XCTAssertEqual(session.lastUserPromptImageAttachments, [attachment])
     }
 
     func testPermissionRequestForAskUserQuestionUsesProvidedOptions() {
@@ -1494,11 +1998,15 @@ final class SessionStoreTests: XCTestCase {
         status: String,
         userPrompt: String? = nil,
         userPromptHasAttachments: Bool = false,
+        userPromptImageAttachments: [UserPromptImageAttachment] = [],
         tool: String? = nil,
         toolUseId: String? = nil,
         toolInput: [String: AnyCodable]? = nil,
         permissionSuggestions: [AnyCodable]? = nil,
-        interactionRequestId: String? = nil
+        interactionRequestId: String? = nil,
+        permissionMode: String? = nil,
+        claudeProcessId: Int? = nil,
+        codexProcessId: Int? = nil
     ) -> HookEvent {
         HookEvent(
             provider: provider,
@@ -1512,9 +2020,12 @@ final class SessionStoreTests: XCTestCase {
             toolUseId: toolUseId,
             userPrompt: userPrompt,
             userPromptHasAttachments: userPromptHasAttachments,
-            permissionMode: nil,
+            userPromptImageAttachments: userPromptImageAttachments,
+            permissionMode: permissionMode,
             permissionSuggestions: permissionSuggestions,
             interactive: true,
+            claudeProcessId: claudeProcessId,
+            codexProcessId: codexProcessId,
             interactionRequestId: interactionRequestId
         )
     }
@@ -1536,4 +2047,33 @@ final class SessionStoreTests: XCTestCase {
 
         return condition()
     }
+}
+
+private nonisolated final class FirstCallGate: @unchecked Sendable {
+    private let lock = NSLock()
+    private var claimed = false
+
+    var hasClaimed: Bool { lock.withLock { claimed } }
+
+    func claim() -> Bool {
+        lock.withLock {
+            if claimed { return false }
+            claimed = true
+            return true
+        }
+    }
+}
+
+private nonisolated final class Counter: @unchecked Sendable {
+    private let lock = NSLock()
+    private var count = 0
+    var value: Int { lock.withLock { count } }
+    func increment() { lock.withLock { count += 1 } }
+}
+
+private nonisolated final class InvalidationRecorder: @unchecked Sendable {
+    private let lock = NSLock()
+    private var recorded: [String] = []
+    var values: [String] { lock.withLock { recorded } }
+    func record(_ value: String) { lock.withLock { recorded.append(value) } }
 }

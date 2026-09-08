@@ -296,7 +296,7 @@ final class NotchiStateMachine {
     }
 
     private func reconcileCodexProcessLiveness() {
-        let trackedSessions = sessionStore.sessions.values.filter { $0.isCodexCLIProcessBacked }
+        let trackedSessions = sessionStore.sessions.values.filter { $0.isCodexProcessMonitored }
         let trackedKeys = Set(trackedSessions.map(\.sessionKey))
         codexProcessMissCounts = codexProcessMissCounts.filter { trackedKeys.contains($0.key) }
 
@@ -411,7 +411,7 @@ final class NotchiStateMachine {
     }
 
     private func refreshCodexProcessMonitoring() {
-        let shouldMonitor = sessionStore.sessions.values.contains { $0.isCodexCLIProcessBacked }
+        let shouldMonitor = sessionStore.sessions.values.contains { $0.isCodexProcessMonitored }
 
         if shouldMonitor {
             guard codexProcessMonitorTask == nil else { return }
@@ -473,7 +473,6 @@ final class NotchiStateMachine {
             return
         }
 
-        let transcriptPaths = requests.map(\.transcriptPath)
         codexThreadMetadataRefreshTask = Task { [weak self] in
             guard let self else { return }
             defer { self.codexThreadMetadataRefreshTask = nil }
@@ -484,7 +483,7 @@ final class NotchiStateMachine {
             }
             async let metadataUpdates = self.sessionStore.resolveCodexThreadMetadata(requests)
             async let compactionUpdates = self.sessionStore.resolveCodexCompactionSignals(compactionRequests)
-            async let usageRefresh: Void = CodexUsageService.shared.refresh(transcriptPaths: transcriptPaths)
+            async let usageRefresh: Void = CodexUsageService.shared.refreshFromAPI()
             let updates = await metadataUpdates
             let signals = await compactionUpdates
             _ = await usageRefresh

@@ -126,6 +126,43 @@ final class NotchContentViewTests: XCTestCase {
         )
     }
 
+    func testCollapsedRingPercentageReturnsNonzeroUsage() {
+        XCTAssertEqual(
+            NotchContentView.collapsedRingPercentage(
+                isUsageEnabled: true,
+                provider: .claude,
+                claudeUsage: QuotaPeriod(utilization: 42, resetsAt: nil),
+                codexSessionUsage: nil,
+                codexWeeklyUsage: nil
+            ),
+            42
+        )
+    }
+
+    func testCollapsedRingPercentageHidesZeroUsage() {
+        XCTAssertNil(
+            NotchContentView.collapsedRingPercentage(
+                isUsageEnabled: true,
+                provider: .claude,
+                claudeUsage: QuotaPeriod(utilization: 0, resetsAt: nil),
+                codexSessionUsage: nil,
+                codexWeeklyUsage: nil
+            )
+        )
+    }
+
+    func testCollapsedRingPercentageHidesUsageWhenDisabled() {
+        XCTAssertNil(
+            NotchContentView.collapsedRingPercentage(
+                isUsageEnabled: false,
+                provider: .claude,
+                claudeUsage: QuotaPeriod(utilization: 42, resetsAt: nil),
+                codexSessionUsage: nil,
+                codexWeeklyUsage: nil
+            )
+        )
+    }
+
     func testGrassIslandRendersOnlyForExpandedActivityView() {
         XCTAssertTrue(
             NotchContentView.shouldRenderGrassIsland(
@@ -246,19 +283,19 @@ final class NotchContentViewTests: XCTestCase {
 
     func testUsageRowsStackInOneColumnWhenPanelIsEnlarged() {
         XCTAssertFalse(
-            UsageDetailView.usesTwoColumnLayout(rowCount: 3, hideGrassIsland: false, panelScale: 1.25)
+            UsageDetailView.usesTwoColumnLayout(rowCount: 3, showGrassIsland: true, panelScale: 1.25)
         )
     }
 
     func testUsageRowsUseTwoColumnsAtStandardScaleToFitThreeRows() {
         XCTAssertTrue(
-            UsageDetailView.usesTwoColumnLayout(rowCount: 3, hideGrassIsland: false, panelScale: 1)
+            UsageDetailView.usesTwoColumnLayout(rowCount: 3, showGrassIsland: true, panelScale: 1)
         )
         XCTAssertFalse(
-            UsageDetailView.usesTwoColumnLayout(rowCount: 2, hideGrassIsland: false, panelScale: 1)
+            UsageDetailView.usesTwoColumnLayout(rowCount: 2, showGrassIsland: true, panelScale: 1)
         )
         XCTAssertFalse(
-            UsageDetailView.usesTwoColumnLayout(rowCount: 3, hideGrassIsland: true, panelScale: 1)
+            UsageDetailView.usesTwoColumnLayout(rowCount: 3, showGrassIsland: false, panelScale: 1)
         )
     }
 

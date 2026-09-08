@@ -20,6 +20,57 @@ extension ClaudeUsageServiceTests {
         XCTAssertEqual(service.currentWeeklyUsage?.usagePercentage, 58)
     }
 
+    func testFailedRefreshMarksWeeklyOnlyUsageAsStaleInsteadOfFresh() async throws {
+        var calls = 0
+        let (service, _) = makeService(fetchUsage: { _ in
+            calls += 1
+            if calls == 1 {
+                let weeklyOnly = try JSONSerialization.data(withJSONObject: [
+                    "seven_day": ["utilization": 58.0, "resets_at": "2099-01-08T01:00:00Z"]
+                ])
+                return (weeklyOnly, self.makeResponse(statusCode: 200))
+            }
+            throw URLError(.notConnectedToInternet)
+        })
+
+        await service.performFetch(with: "token")
+        XCTAssertNil(service.currentUsage)
+        XCTAssertEqual(service.currentWeeklyUsage?.usagePercentage, 58)
+
+        await service.performFetch(with: "token")
+
+        XCTAssertEqual(service.recoveryAction, .retry)
+        XCTAssertNil(service.error)
+        XCTAssertNotNil(service.statusMessage)
+        XCTAssertTrue(service.isUsageStale)
+        XCTAssertTrue(service.isWeeklyUsageHeldOver)
+    }
+
+    func testFailedRefreshMarksModelOnlyUsageAsStaleInsteadOfFresh() async throws {
+        var calls = 0
+        let (service, _) = makeService(fetchUsage: { _ in
+            calls += 1
+            if calls == 1 {
+                let modelOnly = try JSONSerialization.data(withJSONObject: [
+                    "seven_day_sonnet": ["utilization": 63.0]
+                ])
+                return (modelOnly, self.makeResponse(statusCode: 200))
+            }
+            throw URLError(.notConnectedToInternet)
+        })
+
+        await service.performFetch(with: "token")
+        XCTAssertNil(service.currentUsage)
+        XCTAssertNil(service.currentWeeklyUsage)
+        XCTAssertEqual(service.currentModelUsage?.usagePercentage, 63)
+
+        await service.performFetch(with: "token")
+
+        XCTAssertNil(service.error)
+        XCTAssertNotNil(service.statusMessage)
+        XCTAssertTrue(service.isUsageStale)
+    }
+
     func testSuccessfulFetchReenablesUsageFlag() async throws {
         AppSettings.isUsageEnabled = false
         let dependencies = makeDependencies(

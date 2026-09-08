@@ -21,15 +21,83 @@ enum SpriteLayout {
     }
 }
 
-private enum GrassTexture {
-    static let image = Image("GrassIsland")
-    static let pixelSize = CGSize(width: 512, height: 512)
-    static let tileWidth: CGFloat = 80
+struct IslandBackgroundView: View {
+    let background: IslandBackground
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
+
+    var body: some View {
+        GeometryReader { geometry in
+            if background == .automatic {
+                AutomaticIslandBackgroundView()
+            } else if background == .water {
+                TimelineView(.animation(minimumInterval: 1 / WaterAnimation.framesPerSecond, paused: reduceMotion)) { timeline in
+                    let frame = WaterAnimation.frameIndex(at: timeline.date, reduceMotion: reduceMotion)
+                    Rectangle().fill(tilePaint(assetName: WaterAnimation.assetName(frame: frame)))
+                }
+            } else if background == .ground {
+                ground(for: geometry.size)
+            } else {
+                Rectangle().fill(grassPaint(for: geometry.size))
+            }
+        }
+        .clipped()
+        .accessibilityHidden(true)
+    }
+
+    private func ground(for size: CGSize) -> some View {
+        let craterSize = floor(min(64, size.width * 0.24, size.height * 0.55) / 2) * 2
+        return ZStack(alignment: .topLeading) {
+            Rectangle().fill(tilePaint(assetName: background.assetName))
+            // Place two landmarks independently of the repeating terrain.
+            ForEach(0..<2) { index in
+                Image("IslandCrater")
+                    .resizable()
+                    .interpolation(.none)
+                    .frame(width: craterSize, height: craterSize)
+                    .position(
+                        x: (size.width * (index == 0 ? 0.25 : 0.75)).rounded(),
+                        y: (size.height * (index == 0 ? 0.4 : 0.65)).rounded()
+                    )
+            }
+        }
+        // Apply the panel fade once to the complete surface, not to each overlapping layer.
+        .compositingGroup()
+    }
+
+    private func tilePaint(assetName: String) -> ImagePaint {
+        ImagePaint(image: Image(assetName).interpolation(.none), scale: 2)
+    }
+
+    private func grassPaint(for size: CGSize) -> ImagePaint {
+        let scale = max(80 / 512.0, size.height / 512)
+        let drawnSize = 512 * scale
+        let width = min(1, 80 / drawnSize)
+        let height = min(1, size.height / drawnSize)
+        // Preserve the original grassland's 80pt aspect-fill crop.
+        return ImagePaint(
+            image: Image("GrassIsland"),
+            sourceRect: CGRect(x: (1 - width) / 2, y: (1 - height) / 2, width: width, height: height),
+            scale: scale
+        )
+    }
+}
+
+private struct AutomaticIslandBackgroundView: View {
+    private let rotation = IslandBackgroundRotation.shared
+
+    var body: some View {
+        let cycle = rotation.cycle
+        TimelineView(.periodic(from: cycle.startedAt, by: IslandBackgroundCycle.interval)) { timeline in
+            IslandBackgroundView(background: cycle.background(at: timeline.date))
+        }
+    }
 }
 
 // MARK: - Visual layer (placed in .background, no interaction)
 
 struct GrassIslandView: View {
+    @AppStorage(AppSettings.islandBackgroundKey) private var backgroundRaw = IslandBackground.grassland.rawValue
+
     let sessions: [SessionData]
     var selectedSessionId: String?
     var hoveredSessionId: String?
@@ -40,8 +108,7 @@ struct GrassIslandView: View {
     var body: some View {
         GeometryReader { geometry in
             ZStack(alignment: .bottom) {
-                Rectangle()
-                    .fill(grassPaint(for: geometry.size))
+                IslandBackgroundView(background: IslandBackground.resolve(backgroundRaw))
                     .frame(width: geometry.size.width, height: geometry.size.height)
 
                 if !sessions.isEmpty {
@@ -87,29 +154,6 @@ struct GrassIslandView: View {
         )
     }
 
-    private func grassPaint(for size: CGSize) -> ImagePaint {
-        let scale = max(GrassTexture.tileWidth / GrassTexture.pixelSize.width, size.height / GrassTexture.pixelSize.height)
-        let drawnSize = CGSize(
-            width: GrassTexture.pixelSize.width * scale,
-            height: GrassTexture.pixelSize.height * scale
-        )
-        let visibleWidthFraction = min(1, GrassTexture.tileWidth / drawnSize.width)
-        let visibleHeightFraction = min(1, size.height / drawnSize.height)
-
-        // Match the old 80pt aspect-fill tile crop while drawing as a single paint.
-        let sourceRect = CGRect(
-            x: (1 - visibleWidthFraction) / 2,
-            y: (1 - visibleHeightFraction) / 2,
-            width: visibleWidthFraction,
-            height: visibleHeightFraction
-        )
-
-        return ImagePaint(
-            image: GrassTexture.image,
-            sourceRect: sourceRect,
-            scale: scale
-        )
-    }
 }
 
 // MARK: - Interaction layer (placed in .overlay for reliable hit testing)
@@ -157,12 +201,6 @@ struct GrassTapOverlay: View {
 }
 
 // MARK: - Private views
-
-private struct NoHighlightButtonStyle: ButtonStyle {
-    func makeBody(configuration: Configuration) -> some View {
-        configuration.label
-    }
-}
 
 private struct SpriteTapTarget: View {
     let sessionId: String

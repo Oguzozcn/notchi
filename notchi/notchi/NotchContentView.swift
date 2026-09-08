@@ -178,7 +178,7 @@ struct NotchContentView: View {
     @State private var showingSessionActivity = false
     @State private var isMuted = AppSettings.isMuted
     @State private var isActivityCollapsed = false
-    @AppStorage(AppSettings.hideGrassIslandKey) private var hideGrassIsland = false
+    @AppStorage(AppSettings.showGrassIslandKey) private var showGrassIsland = true
     @State private var hoveredSessionId: String?
     @State private var spriteHandoff: SpriteHandoff?
     @State private var spriteHandoffProgress: CGFloat = 0
@@ -199,13 +199,13 @@ struct NotchContentView: View {
         sessionStore.effectiveSession
     }
 
-    static func panelMode(hideGrassIsland: Bool, isActivityCollapsed: Bool) -> ExpandedPanelMode {
-        if hideGrassIsland { return .compact }
+    static func panelMode(showGrassIsland: Bool, isActivityCollapsed: Bool) -> ExpandedPanelMode {
+        if !showGrassIsland { return .compact }
         return isActivityCollapsed ? .islandOnly : .full
     }
 
     private var panelMode: ExpandedPanelMode {
-        Self.panelMode(hideGrassIsland: hideGrassIsland, isActivityCollapsed: isActivityCollapsed)
+        Self.panelMode(showGrassIsland: showGrassIsland, isActivityCollapsed: isActivityCollapsed)
     }
 
     private var notchSize: CGSize { panelManager.notchSize }
@@ -349,7 +349,18 @@ struct NotchContentView: View {
     }
 
     private var collapsedHeaderSpriteScale: CGFloat {
-        !isExpanded && panelManager.isCollapsedHovered ? 1.08 : 1
+        let hoverScale: CGFloat = !isExpanded && panelManager.isCollapsedHovered ? 1.08 : 1
+        return hoverScale * Self.headerSpriteFitScale(
+            notchHeight: notchSize.height,
+            screenHasNotch: panelManager.screenHasNotch
+        )
+    }
+
+    static func headerSpriteFitScale(notchHeight: CGFloat, screenHasNotch: Bool) -> CGFloat {
+        guard !screenHasNotch else { return 1 }
+        let referenceNotchHeight: CGFloat = 38
+        let minimumScale: CGFloat = 0.8
+        return min(1, max(minimumScale, notchHeight / referenceNotchHeight))
     }
 
     private var collapsedHeaderSpriteOffsetX: CGFloat {
@@ -434,14 +445,35 @@ struct NotchContentView: View {
         provider == .codex ? (codexSessionUsage ?? codexWeeklyUsage) : claudeUsage
     }
 
+    static func collapsedRingPercentage(
+        isUsageEnabled: Bool,
+        provider: AgentProvider,
+        claudeUsage: QuotaPeriod?,
+        codexSessionUsage: QuotaPeriod?,
+        codexWeeklyUsage: QuotaPeriod?
+    ) -> Int? {
+        guard isUsageEnabled else { return nil }
+        guard let percentage = collapsedRingUsage(
+            provider: provider,
+            claudeUsage: claudeUsage,
+            codexSessionUsage: codexSessionUsage,
+            codexWeeklyUsage: codexWeeklyUsage
+        )?.usagePercentage, percentage > 0 else { return nil }
+        return percentage
+    }
+
     private var usageRingPercentage: Int? {
-        guard AppSettings.isUsageEnabled else { return nil }
-        return Self.collapsedRingUsage(
+        Self.collapsedRingPercentage(
+            isUsageEnabled: AppSettings.isUsageEnabled,
             provider: ringProvider,
             claudeUsage: usageService.currentUsage,
             codexSessionUsage: codexUsageService.currentUsage,
             codexWeeklyUsage: codexUsageService.currentWeeklyUsage
-        )?.usagePercentage
+        )
+    }
+
+    private var isCollapsedRingVisible: Bool {
+        (leftContent == .ring || rightContent == .ring) && usageRingPercentage != nil
     }
 
     private var compactContentWidth: CGFloat {
@@ -624,6 +656,9 @@ struct NotchContentView: View {
                 showingSessionActivity = false
             }
         }
+        .onChange(of: isCollapsedRingVisible) { _, _ in
+            panelManager.refreshIdleMode()
+        }
     }
 
     @ViewBuilder
@@ -748,7 +783,13 @@ struct NotchContentView: View {
     private func selectGrassSession(_ sessionId: String) {
         showingUsageDetail = false
         usageDetailProvider = nil
-        guard sessionStore.activeSessionCount >= 2 else { return }
+        guard sessionStore.activeSessionCount >= 2 else {
+            if let sessionKey = ProviderSessionKey(stableId: sessionId),
+               let session = sessionStore.session(for: sessionKey) {
+                TerminalJumpService.shared.jump(to: session)
+            }
+            return
+        }
 
         let shouldPlayHaptic = sessionStore.selectedSessionId != sessionId || !showingSessionActivity
         if shouldPlayHaptic {

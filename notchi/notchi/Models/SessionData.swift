@@ -43,14 +43,19 @@ final class SessionData: Identifiable {
     private(set) var recentAssistantMessages: [AssistantMessage] = []
     private(set) var lastUserPrompt: String?
     private(set) var lastUserPromptHasAttachments: Bool = false
+    private(set) var lastUserPromptImageAttachments: [UserPromptImageAttachment] = []
+    private(set) var lastUserPromptHasOtherAttachments: Bool = false
     private(set) var promptSubmitTime: Date?
     private(set) var permissionMode: String = "default"
+    private(set) var gitBranch: String?
+    private(set) var gitPullRequest: GitPullRequest?
     private(set) var pendingQuestions: [PendingQuestion] = []
     private(set) var pendingQuestionResponseContext: PendingQuestionResponseContext?
     private(set) var currentSpinnerVerb: String
     private(set) var claudeProcessId: Int?
     private(set) var codexProcessId: Int?
     private(set) var codexOrigin: CodexOrigin?
+    private(set) var hostBundleIdentifier: String?
     private(set) var codexTitle: String?
     private(set) var codexTranscriptPath: String?
     private(set) var codexArchived: Bool = false
@@ -59,6 +64,7 @@ final class SessionData: Identifiable {
     private var sleepTimer: Task<Void, Never>?
 
     private static let maxEvents = 20
+    private static let storedPromptMaxLength = 2000
     private static let maxAssistantMessages = 10
     private static let sleepDelay: Duration = .seconds(300)
 
@@ -70,8 +76,12 @@ final class SessionData: Identifiable {
         switch permissionMode {
         case "plan": return String(localized: "Plan Mode")
         case "acceptEdits": return String(localized: "Accept Edits")
+        case "auto": return String(localized: "Auto")
         case "dontAsk": return String(localized: "Don't Ask")
         case "bypassPermissions": return String(localized: "Bypass")
+        case CodexPermissionMode.readOnly: return String(localized: "Read Only")
+        case CodexPermissionMode.standard: return String(localized: "Default")
+        case CodexPermissionMode.fullAccess: return String(localized: "Full Access")
         default: return nil
         }
     }
@@ -86,8 +96,8 @@ final class SessionData: Identifiable {
         return nil
     }
 
-    var isCodexCLIProcessBacked: Bool {
-        provider == .codex && codexOrigin == .cli && codexProcessId != nil
+    var isCodexProcessMonitored: Bool {
+        provider == .codex && codexProcessId != nil && (codexOrigin == .cli || hostBundleIdentifier != nil)
     }
 
     var isClaudeProcessBacked: Bool {
@@ -96,6 +106,10 @@ final class SessionData: Identifiable {
 
     var isCodexThreadBacked: Bool {
         provider == .codex && codexTranscriptPath != nil
+    }
+
+    var hostProcessId: Int? {
+        provider == .codex ? codexProcessId : claudeProcessId
     }
 
     // Sprite positioning constants (normalized 0..1 range for X, points for Y)
@@ -222,15 +236,41 @@ final class SessionData: Identifiable {
         lastActivity = Date()
     }
 
-    func recordUserPrompt(_ prompt: String?, hasAttachments: Bool = false) {
+    private nonisolated static let harnessInjectedPromptMarkers = [
+        "<task-notification>",
+        "<system-reminder>",
+        "[SYSTEM NOTIFICATION",
+    ]
+
+    nonisolated static func isHarnessInjectedPrompt(_ prompt: String?) -> Bool {
+        guard let trimmed = prompt?.trimmingCharacters(in: .whitespacesAndNewlines) else { return false }
+        return harnessInjectedPromptMarkers.contains { trimmed.hasPrefix($0) }
+    }
+
+    func recordUserPrompt(
+        _ prompt: String?,
+        hasAttachments: Bool = false,
+        imageAttachments: [UserPromptImageAttachment] = [],
+        hasOtherAttachments: Bool = false
+    ) {
         let now = Date()
+        if Self.isHarnessInjectedPrompt(prompt) {
+            promptSubmitTime = now
+            lastActivity = now
+            if provider == .codex {
+                codexCompactionSignal = nil
+            }
+            return
+        }
         if let trimmedPrompt = prompt?.trimmingCharacters(in: .whitespacesAndNewlines),
            !trimmedPrompt.isEmpty {
-            lastUserPrompt = trimmedPrompt.truncatedForPrompt()
+            lastUserPrompt = String(trimmedPrompt.prefix(Self.storedPromptMaxLength))
         } else {
             lastUserPrompt = nil
         }
         lastUserPromptHasAttachments = hasAttachments
+        lastUserPromptImageAttachments = imageAttachments
+        lastUserPromptHasOtherAttachments = hasOtherAttachments
         promptSubmitTime = now
         if provider == .codex {
             codexCompactionSignal = nil
@@ -246,10 +286,18 @@ final class SessionData: Identifiable {
         permissionMode = mode
     }
 
+    func updateGitBranch(_ branch: String?) {
+        gitBranch = branch
+    }
+
+    func updateGitPullRequest(_ pullRequest: GitPullRequest?) {
+        gitPullRequest = pullRequest
+    }
+
     func updateClaudeRuntime(processId: Int?) {
         guard provider == .claude,
               let processId,
-              processId > 0 else { return }
+              Self.isValidProcessId(processId) else { return }
 
         claudeProcessId = processId
     }
@@ -257,13 +305,21 @@ final class SessionData: Identifiable {
     func updateCodexRuntime(processId: Int?, origin: CodexOrigin?) {
         guard provider == .codex else { return }
 
-        if let processId, processId > 0 {
+        if let processId, Self.isValidProcessId(processId) {
             codexProcessId = processId
         }
 
         if let origin {
             codexOrigin = origin
         }
+    }
+
+    private static func isValidProcessId(_ processId: Int) -> Bool {
+        processId > 0 && processId <= Int(pid_t.max)
+    }
+
+    func updateHostBundleIdentifier(_ bundleIdentifier: String?) {
+        hostBundleIdentifier = bundleIdentifier.flatMap { $0.isEmpty ? nil : $0 }
     }
 
     func updateCodexTitle(_ title: String?) {

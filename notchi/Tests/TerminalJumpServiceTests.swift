@@ -228,17 +228,226 @@ final class TerminalJumpServiceTests: XCTestCase {
         XCTAssertNil(TerminalJumpService.codexDesktopThreadURL(threadId: "   "))
     }
 
+    func testClaudeSessionHostedByT3CodeActivatesHostApp() {
+        let session = SessionData(sessionId: "claude-session", provider: .claude, cwd: "/tmp/project")
+        session.updateClaudeRuntime(processId: 30)
+        var openedURLs: [URL] = []
+        var activatedProcessIds: [pid_t] = []
+        let service = makeService(
+            openURL: { url in
+                openedURLs.append(url)
+                return true
+            },
+            processSnapshot: { self.makeSnapshot(parentProcessId: Self.terminalAncestry[$0]) },
+            bundleIdentifierForProcess: { Self.t3CodeBundles[$0] },
+            activateProcess: { processId in
+                activatedProcessIds.append(processId)
+                return true
+            }
+        )
+
+        let didJump = service.jump(to: session)
+
+        XCTAssertTrue(didJump)
+        XCTAssertTrue(openedURLs.isEmpty)
+        XCTAssertEqual(activatedProcessIds, [10])
+    }
+
+    func testCodexDesktopSessionHostedByT3CodeActivatesHostAppInsteadOfOpeningURL() {
+        let session = SessionData(sessionId: "thread-123", provider: .codex, cwd: "/tmp/project")
+        session.updateCodexRuntime(processId: 30, origin: .desktop)
+        var openedURLs: [URL] = []
+        var activatedProcessIds: [pid_t] = []
+        let service = makeService(
+            openURL: { url in
+                openedURLs.append(url)
+                return true
+            },
+            processSnapshot: { self.makeSnapshot(parentProcessId: Self.terminalAncestry[$0]) },
+            bundleIdentifierForProcess: { Self.t3CodeBundles[$0] },
+            activateProcess: { processId in
+                activatedProcessIds.append(processId)
+                return true
+            }
+        )
+
+        let didJump = service.jump(to: session)
+
+        XCTAssertTrue(didJump)
+        XCTAssertTrue(openedURLs.isEmpty)
+        XCTAssertEqual(activatedProcessIds, [10])
+    }
+
+    func testCodexDesktopSessionWithLiveHostDoesNotOpenURLWhenActivationFails() {
+        let session = SessionData(sessionId: "thread-123", provider: .codex, cwd: "/tmp/project")
+        session.updateCodexRuntime(processId: 30, origin: .desktop)
+        var openedURLs: [URL] = []
+        var activatedProcessIds: [pid_t] = []
+        let service = makeService(
+            openURL: { url in
+                openedURLs.append(url)
+                return true
+            },
+            processSnapshot: { self.makeSnapshot(parentProcessId: Self.terminalAncestry[$0]) },
+            bundleIdentifierForProcess: { Self.t3CodeBundles[$0] },
+            activateProcess: { processId in
+                activatedProcessIds.append(processId)
+                return false
+            }
+        )
+
+        let didJump = service.jump(to: session)
+
+        XCTAssertFalse(didJump)
+        XCTAssertEqual(activatedProcessIds, [10])
+        XCTAssertTrue(openedURLs.isEmpty)
+    }
+
+    func testCodexSessionWithDeadProcessActivatesStoredHostApp() {
+        let session = SessionData(sessionId: "thread-123", provider: .codex, cwd: "/tmp/project")
+        session.updateCodexRuntime(processId: 30, origin: .desktop)
+        session.updateHostBundleIdentifier("com.t3tools.t3code")
+        var openedURLs: [URL] = []
+        var activatedBundleIds: [String] = []
+        let service = makeService(
+            openURL: { url in
+                openedURLs.append(url)
+                return true
+            },
+            processSnapshot: { _ in nil },
+            activateApplication: { bundleId in
+                activatedBundleIds.append(bundleId)
+                return true
+            }
+        )
+
+        let didJump = service.jump(to: session)
+
+        XCTAssertTrue(didJump)
+        XCTAssertEqual(activatedBundleIds, ["com.t3tools.t3code"])
+        XCTAssertTrue(openedURLs.isEmpty)
+    }
+
+    func testCodexSessionWithDeadProcessAndQuitHostDoesNotOpenURL() {
+        let session = SessionData(sessionId: "thread-123", provider: .codex, cwd: "/tmp/project")
+        session.updateCodexRuntime(processId: 30, origin: .desktop)
+        session.updateHostBundleIdentifier("com.t3tools.t3code")
+        var openedURLs: [URL] = []
+        let service = makeService(
+            openURL: { url in
+                openedURLs.append(url)
+                return true
+            },
+            processSnapshot: { _ in nil },
+            activateApplication: { _ in false }
+        )
+
+        let didJump = service.jump(to: session)
+
+        XCTAssertFalse(didJump)
+        XCTAssertTrue(openedURLs.isEmpty)
+    }
+
+    func testClaudeSessionWithDeadProcessActivatesStoredHostApp() {
+        let session = SessionData(sessionId: "claude-session", provider: .claude, cwd: "/tmp/project")
+        session.updateClaudeRuntime(processId: 30)
+        session.updateHostBundleIdentifier("com.t3tools.t3code")
+        var activatedBundleIds: [String] = []
+        let service = makeService(
+            processSnapshot: { _ in nil },
+            activateApplication: { bundleId in
+                activatedBundleIds.append(bundleId)
+                return true
+            }
+        )
+
+        let didJump = service.jump(to: session)
+
+        XCTAssertTrue(didJump)
+        XCTAssertEqual(activatedBundleIds, ["com.t3tools.t3code"])
+    }
+
+    func testHostBundleIdentifierResolvesSupportedHostFromAncestry() {
+        let service = makeService(
+            processSnapshot: { self.makeSnapshot(parentProcessId: Self.terminalAncestry[$0]) },
+            bundleIdentifierForProcess: { Self.t3CodeBundles[$0] }
+        )
+
+        XCTAssertEqual(service.hostBundleIdentifier(hosting: 30), "com.t3tools.t3code")
+    }
+
+    func testHostBundleIdentifierIsNilForUnsupportedAncestry() {
+        let service = makeService(
+            processSnapshot: { self.makeSnapshot(parentProcessId: Self.terminalAncestry[$0]) },
+            bundleIdentifierForProcess: { [pid_t(10): "com.openai.codex"][$0] }
+        )
+
+        XCTAssertNil(service.hostBundleIdentifier(hosting: 30))
+    }
+
+    func testCodexDesktopSessionHostedByCodexAppOpensThreadURL() {
+        let session = SessionData(sessionId: "thread-123", provider: .codex, cwd: "/tmp/project")
+        session.updateCodexRuntime(processId: 30, origin: .desktop)
+        var openedURLs: [URL] = []
+        var activatedProcessIds: [pid_t] = []
+        let service = makeService(
+            openURL: { url in
+                openedURLs.append(url)
+                return true
+            },
+            processSnapshot: { self.makeSnapshot(parentProcessId: Self.terminalAncestry[$0]) },
+            bundleIdentifierForProcess: { [pid_t(10): "com.openai.codex"][$0] },
+            activateProcess: { processId in
+                activatedProcessIds.append(processId)
+                return true
+            }
+        )
+
+        let didJump = service.jump(to: session)
+
+        XCTAssertTrue(didJump)
+        XCTAssertEqual(openedURLs.map(\.absoluteString), ["codex://threads/thread-123"])
+        XCTAssertTrue(activatedProcessIds.isEmpty)
+    }
+
+    func testCodexDesktopSessionWithoutProcessIdOpensThreadURL() {
+        let session = SessionData(sessionId: "thread-123", provider: .codex, cwd: "/tmp/project")
+        session.updateCodexRuntime(processId: nil, origin: .desktop)
+        var openedURLs: [URL] = []
+        var activatedProcessIds: [pid_t] = []
+        let service = makeService(
+            openURL: { url in
+                openedURLs.append(url)
+                return true
+            },
+            processSnapshot: { self.makeSnapshot(parentProcessId: Self.terminalAncestry[$0]) },
+            bundleIdentifierForProcess: { Self.t3CodeBundles[$0] },
+            activateProcess: { processId in
+                activatedProcessIds.append(processId)
+                return true
+            }
+        )
+
+        let didJump = service.jump(to: session)
+
+        XCTAssertTrue(didJump)
+        XCTAssertEqual(openedURLs.map(\.absoluteString), ["codex://threads/thread-123"])
+        XCTAssertTrue(activatedProcessIds.isEmpty)
+    }
+
     private func makeService(
         openURL: @escaping (URL) -> Bool = { _ in true },
         processSnapshot: @escaping @MainActor (pid_t) -> TerminalJumpService.ProcessSnapshot? = { _ in nil },
         bundleIdentifierForProcess: @escaping @MainActor (pid_t) -> String? = { _ in nil },
-        activateProcess: @escaping @MainActor (pid_t) -> Bool = { _ in true }
+        activateProcess: @escaping @MainActor (pid_t) -> Bool = { _ in true },
+        activateApplication: @escaping @MainActor (String) -> Bool = { _ in false }
     ) -> TerminalJumpService {
         TerminalJumpService(
             openURL: openURL,
             processSnapshot: processSnapshot,
             bundleIdentifierForProcess: bundleIdentifierForProcess,
-            activateProcess: activateProcess
+            activateProcess: activateProcess,
+            activateApplication: activateApplication
         )
     }
 
@@ -259,4 +468,5 @@ final class TerminalJumpServiceTests: XCTestCase {
 
     private static let terminalAncestry: [pid_t: pid_t] = [30: 20, 20: 10, 10: 1]
     private static let terminalBundles: [pid_t: String] = [10: "com.apple.Terminal"]
+    private static let t3CodeBundles: [pid_t: String] = [10: "com.t3tools.t3code"]
 }
