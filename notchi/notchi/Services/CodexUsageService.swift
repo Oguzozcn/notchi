@@ -117,7 +117,11 @@ final class CodexUsageService {
     private var pollTimer: (any CodexUsagePollTimer)?
     private let dependencies: CodexUsageServiceDependencies
 
-    init(dependencies: CodexUsageServiceDependencies = .live) {
+    convenience init() {
+        self.init(dependencies: .live)
+    }
+
+    init(dependencies: CodexUsageServiceDependencies) {
         self.dependencies = dependencies
     }
 
