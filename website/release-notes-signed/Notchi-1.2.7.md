@@ -1,0 +1,29 @@
+<!-- sparkle-sign-warning:
+IMPORTANT: This file was signed by Sparkle. Any modifications to this file requires updating signatures in appcasts that reference this file! This will involve re-running generate_appcast or sign_update.
+-->
+# Notchi 1.2.7
+
+This release guides you through approving Notchi's Codex hooks, shows Codex accounts without a spending cap, and fixes the extra usage limit that displayed in cents.
+
+## Codex
+
+- Checks whether Codex has registered, enabled, and trusted Notchi's hooks, and shows setup guidance under Agent Hooks when approval is missing or cannot be verified
+- Adds Open in Terminal and Copy Command actions that walk through `/hooks` approval and starting a new chat
+- Follows the signed-in account for usage tracking, clearing the previous account's values after a switch and refreshing while idle
+- Shows "No spending cap" instead of an empty bar for accounts with unlimited credits, and dims it when a refresh fails
+
+## Usage
+
+- Shows the extra usage limit in dollars with thousands separators instead of the raw cent value
+- Lays out the Extra usage card like the other usage meters
+- Keeps a provider selectable in the usage detail view when it only has cost history
+
+## Emotion Analysis
+
+- Fetches the models a custom endpoint serves and adds a free-text model id for servers without a catalog
+- Reads replies from reasoning models on custom endpoints and reports truncated answers instead of failing
+- Pages the Anthropic model catalog and surfaces endpoint errors in Settings
+
+## Localization
+
+- Translates the Codex setup flow and the new emotion analysis settings into Japanese, Korean, Vietnamese, Simplified Chinese, and Traditional Chinese
