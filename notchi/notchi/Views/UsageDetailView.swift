@@ -154,9 +154,17 @@ struct UsageDetailView: View {
         return rowCount >= 3 && showGrassIsland
     }
 
+    var showsUnlimitedCredits: Bool {
+        resolvedProvider == .codex && codexUsage.hasUnlimitedCredits
+    }
+
+    var showsStaleUnlimitedCredits: Bool {
+        showsUnlimitedCredits && codexUsage.isUsageStale
+    }
+
     private var usageRowCount: Int {
         periods.count + (extraUsage == nil ? 0 : 1) + (codexCreditsUSD == nil ? 0 : 1)
-            + (resolvedProvider == .codex && codexUsage.hasUnlimitedCredits ? 1 : 0)
+            + (showsUnlimitedCredits ? 1 : 0)
     }
 
     @ViewBuilder private var usageRows: some View {
@@ -168,10 +176,17 @@ struct UsageDetailView: View {
             ExtraUsageRowView(display: extraUsage)
         }
 
-        if resolvedProvider == .codex && codexUsage.hasUnlimitedCredits {
-            Text("No spending cap")
-                .panelFont(size: 14, weight: .semibold)
-                .foregroundColor(TerminalColors.primaryText)
+        if showsUnlimitedCredits {
+            HStack(alignment: .firstTextBaseline, spacing: 6) {
+                Text("No spending cap")
+                    .panelFont(size: 14, weight: .semibold)
+                    .foregroundColor(TerminalColors.primaryText)
+                if showsStaleUnlimitedCredits {
+                    Text("stale data")
+                        .panelFont(size: 10)
+                        .foregroundColor(TerminalColors.secondaryText)
+                }
+            }
         }
 
         if let codexCreditsUSD {

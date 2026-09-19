@@ -57,6 +57,10 @@ struct UsageBarView: View {
         hasUnlimitedCredits && usage == nil
     }
 
+    var unlimitedCreditsColor: Color {
+        isStale ? TerminalColors.dimmedText : TerminalColors.secondaryText
+    }
+
     var shouldShowRecoveryButton: Bool {
         switch recoveryAction {
         case .retry, .reconnect:
@@ -162,7 +166,7 @@ struct UsageBarView: View {
                 } else if showsUnlimitedCredits {
                     Text("No spending cap")
                         .panelFont(size: 11, weight: .medium)
-                        .foregroundColor(TerminalColors.secondaryText)
+                        .foregroundColor(unlimitedCreditsColor)
                 } else if let usage, let resetTime = usage.formattedResetTime {
                     HStack(alignment: .center, spacing: 4) {
                         Text(resetLabelText(for: resetTime))

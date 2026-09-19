@@ -41,6 +41,24 @@ final class UsageDetailViewTests: XCTestCase {
         XCTAssertTrue(view.codexHasData)
     }
 
+    func testUnlimitedCreditsRowMarksStaleDataOnlyAfterFailedRefresh() async {
+        let codex = CodexUsageService()
+        codex.hasUnlimitedCredits = true
+        let view = UsageDetailView(
+            claudeUsage: ClaudeUsageService(), codexUsage: codex,
+            costStore: CostHistoryStore { _ in [:] },
+            codexCostStore: CostHistoryStore(provider: .codex) { _ in [:] },
+            defaultProvider: .codex
+        )
+
+        XCTAssertTrue(view.showsUnlimitedCredits)
+        XCTAssertFalse(view.showsStaleUnlimitedCredits)
+
+        codex.isUsageStale = true
+
+        XCTAssertTrue(view.showsStaleUnlimitedCredits)
+    }
+
     func testResolvedProviderKeepsSelectionWhenItHasData() {
         XCTAssertEqual(
             UsageDetailView.resolvedProvider(selected: .claude, claudeHasData: true, codexHasData: true),

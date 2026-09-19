@@ -14,6 +14,16 @@ final class UsageBarViewTests: XCTestCase {
         }
     }
 
+    func testUnlimitedLabelDimsWhenUsageIsStale() {
+        for (stale, expected) in [(false, TerminalColors.secondaryText), (true, TerminalColors.dimmedText)] {
+            let view = UsageBarView(
+                usage: nil, hasUnlimitedCredits: true, isLoading: false,
+                error: nil, statusMessage: nil, isStale: stale, recoveryAction: .none
+            )
+            XCTAssertEqual(view.unlimitedCreditsColor, expected)
+        }
+    }
+
     func testPlaceholderShowsOnlyWhenTrulyDisconnected() {
         let view = UsageBarView(
             usage: nil,
