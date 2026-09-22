@@ -83,11 +83,15 @@ struct PanelSettingsView: View {
             }
 
             if let screen = path.last {
-                subScreen(for: screen)
-                    .transition(.asymmetric(
-                        insertion: .move(edge: .trailing).combined(with: .opacity),
-                        removal: .move(edge: .trailing).combined(with: .opacity)
-                    ))
+                // Sub-screens can outgrow the panel (e.g. an expanded picker on a short screen).
+                ScrollView {
+                    subScreen(for: screen)
+                }
+                .scrollIndicators(.never)
+                .transition(.asymmetric(
+                    insertion: .move(edge: .trailing).combined(with: .opacity),
+                    removal: .move(edge: .trailing).combined(with: .opacity)
+                ))
             }
         }
         .animation(.easeInOut(duration: 0.2), value: path)

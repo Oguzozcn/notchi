@@ -270,15 +270,26 @@ final class SessionStore {
     }
 
     func displaySessionLabel(for session: SessionData) -> String {
-        "\(session.projectName) #\(displaySessionNumber(for: session))"
+        if let desktopTitle = claudeDesktopTitle(for: session) {
+            return desktopTitle
+        }
+        return "\(session.projectName) #\(displaySessionNumber(for: session))"
     }
 
     func displayTitle(for session: SessionData) -> String {
+        if let desktopTitle = claudeDesktopTitle(for: session) {
+            return desktopTitle
+        }
         let label = displaySessionLabel(for: session)
         if let detail = session.codexTitle ?? session.lastUserPrompt {
             return "\(label) - \(detail.truncatedForPrompt())"
         }
         return label
+    }
+
+    private func claudeDesktopTitle(for session: SessionData) -> String? {
+        guard session.provider == .claude else { return nil }
+        return ClaudeDesktopSessionTitles.title(forCLISessionId: session.rawSessionId)
     }
 
     private func getOrCreateSession(
