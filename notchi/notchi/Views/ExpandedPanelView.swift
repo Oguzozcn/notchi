@@ -305,11 +305,14 @@ struct ExpandedPanelView: View {
             return nil
         }
 
-        if activeSessions.isEmpty {
+        // WHY: Claude desktop/web users have usage without any hook-reported session,
+        // so show the Claude bar whenever there is Claude usage to show.
+        let showsClaudeWithoutSession = activeSessions.isEmpty && usageService.hasUsageData
+        if activeSessions.isEmpty && !showsClaudeWithoutSession {
             return .noActiveSession
         }
 
-        let includesClaude = Self.includesClaudeUsage(activeSessions: activeSessions)
+        let includesClaude = showsClaudeWithoutSession || Self.includesClaudeUsage(activeSessions: activeSessions)
         let includesCodex = Self.includesCodexUsage(activeSessions: activeSessions)
         let period = mainUsageBarPeriod
 
