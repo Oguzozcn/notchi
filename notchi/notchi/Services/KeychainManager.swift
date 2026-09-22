@@ -1,5 +1,8 @@
 import Foundation
+import os.log
 import Security
+
+nonisolated private let logger = Logger(subsystem: "com.ruban.notchi", category: "KeychainManager")
 
 struct ClaudeOAuthCredentials: Equatable {
     let accessToken: String
@@ -15,6 +18,8 @@ enum KeychainManager {
     private static let cachedOAuthTokenAccount = "cachedOAuthToken"
     private static let recentCredentialCacheTTL: TimeInterval = 5
     private static let securityCLIBackoffInterval: TimeInterval = 60
+    private static let networkRefreshLeeway: TimeInterval = 5 * 60
+    @MainActor private static var inFlightNetworkRefresh: Task<String?, Never>?
     private static let credentialReadLock = NSLock()
     private nonisolated(unsafe) static var recentCredentialCacheEntry: ClaudeCredentialCacheEntry?
     private nonisolated(unsafe) static var lastSecurityCLIFailureAt: Date?
@@ -34,6 +39,7 @@ enum KeychainManager {
     #if DEBUG
     private nonisolated(unsafe) static var taskSecurityCLIReadOverride: (() -> [String: Any]?)?
     private nonisolated(unsafe) static var taskSecurityFrameworkReadOverride: ((Bool) -> [String: Any]?)?
+    private nonisolated(unsafe) static var taskSecurityCLIWriteOverride: (([String: Any], String) -> Bool)?
     private nonisolated(unsafe) static var taskNowOverride: (() -> Date)?
     #endif
 
@@ -43,6 +49,171 @@ enum KeychainManager {
         }
         cacheOAuthToken(credentials.accessToken)
         return credentials.accessToken
+    }
+
+    // Refreshes the Claude Code OAuth token over the network and writes the rotated
+    // credentials back to Claude Code's keychain item, so the CLI and IDE extensions
+    // keep working with the same login. Used when nothing else refreshes the token
+    // (e.g. the user only uses the Claude desktop app or an IDE extension).
+    @MainActor
+    static func refreshAccessTokenOverNetwork() async -> String? {
+        if let inFlight = inFlightNetworkRefresh {
+            return await inFlight.value
+        }
+        let task = Task { await performNetworkRefresh() }
+        inFlightNetworkRefresh = task
+        defer { inFlightNetworkRefresh = nil }
+        return await task.value
+    }
+
+    @MainActor
+    private static func performNetworkRefresh() async -> String? {
+        // WHY: bypass the short-lived cache; another client may have just rotated the token.
+        invalidateRecentCredentialCache()
+        guard let json = readClaudeCodeKeychainViaCLI(),
+              let credentials = decodeClaudeOAuthCredentials(from: json),
+              let refreshToken = decodeRefreshToken(from: json) else {
+            logger.info("No Claude Code refresh token available for network refresh")
+            return nil
+        }
+
+        let now = currentDate()
+        if let expiresAt = credentials.expiresAt,
+           expiresAt.timeIntervalSince(now) > networkRefreshLeeway {
+            cacheOAuthToken(credentials.accessToken)
+            return credentials.accessToken
+        }
+
+        let account = claudeCodeKeychainAccount() ?? NSUserName()
+
+        // WHY: refresh tokens rotate. If the rotated token could not be saved, Claude Code
+        // would be logged out, so prove the item is writable before consuming the old one.
+        guard writeClaudeCodeKeychain(json, account: account) else {
+            logger.warning("Claude Code keychain item is not writable; skipping network refresh")
+            return nil
+        }
+
+        switch await ClaudeOAuthTokenRefresher.requestGrant(refreshToken: refreshToken, now: now) {
+        case let .granted(grant):
+            invalidateRecentCredentialCache()
+            if !writeClaudeCodeKeychain(mergeGrant(grant, into: json), account: account)
+                || readClaudeCodeKeychainViaCLI().flatMap(decodeClaudeOAuthCredentials(from:))?.accessToken != grant.accessToken {
+                logger.error("Refreshed Claude OAuth token but failed to save it to the keychain")
+            }
+            invalidateRecentCredentialCache()
+            cacheOAuthToken(grant.accessToken)
+            return grant.accessToken
+
+        case .rejected:
+            // Another client may have rotated the token between our read and the request.
+            guard let latest = readClaudeCodeKeychainViaCLI().flatMap(decodeClaudeOAuthCredentials(from:)),
+                  latest.accessToken != credentials.accessToken else {
+                return nil
+            }
+            cacheOAuthToken(latest.accessToken)
+            return latest.accessToken
+
+        case .unavailable:
+            return nil
+        }
+    }
+
+    static func mergeGrant(_ grant: ClaudeOAuthTokenGrant, into json: [String: Any]) -> [String: Any] {
+        var oauth = json["claudeAiOauth"] as? [String: Any] ?? [:]
+        oauth["accessToken"] = grant.accessToken
+        if let refreshToken = grant.refreshToken {
+            oauth["refreshToken"] = refreshToken
+        }
+        if let expiresAt = grant.expiresAt {
+            // Claude Code stores expiresAt as epoch milliseconds.
+            oauth["expiresAt"] = Int64((expiresAt.timeIntervalSince1970 * 1000).rounded())
+        }
+        if let scopes = grant.scopes {
+            oauth["scopes"] = scopes
+        }
+        var updated = json
+        updated["claudeAiOauth"] = oauth
+        return updated
+    }
+
+    static func decodeRefreshToken(from json: [String: Any]) -> String? {
+        guard let oauth = json["claudeAiOauth"] as? [String: Any],
+              let rawToken = oauth["refreshToken"] as? String else {
+            return nil
+        }
+        let refreshToken = rawToken.trimmingCharacters(in: .whitespacesAndNewlines)
+        return refreshToken.isEmpty ? nil : refreshToken
+    }
+
+    private static func claudeCodeKeychainAccount() -> String? {
+        let query: [String: Any] = [
+            kSecClass as String: kSecClassGenericPassword,
+            kSecAttrService as String: claudeCodeService,
+            kSecReturnAttributes as String: true,
+            kSecMatchLimit as String: kSecMatchLimitOne,
+            kSecUseAuthenticationUI as String: kSecUseAuthenticationUISkip
+        ]
+
+        var result: AnyObject?
+        guard SecItemCopyMatching(query as CFDictionary, &result) == errSecSuccess,
+              let attributes = result as? [String: Any],
+              let account = attributes[kSecAttrAccount as String] as? String,
+              !account.isEmpty else {
+            return nil
+        }
+        return account
+    }
+
+    // WHY: write through /usr/bin/security (as Claude Code does) so the item's ACL keeps
+    // trusting the same tool and no keychain dialog appears. The command goes over stdin
+    // in interactive mode so the credentials never show up in the process list.
+    private static func writeClaudeCodeKeychain(_ json: [String: Any], account: String) -> Bool {
+        #if DEBUG
+        if let override = taskSecurityCLIWriteOverride {
+            return override(json, account)
+        }
+        #endif
+
+        guard !account.contains(where: { $0 == "\"" || $0 == "\\" || $0.isNewline }),
+              let data = try? JSONSerialization.data(withJSONObject: json) else {
+            return false
+        }
+
+        let hexPassword = data.map { String(format: "%02x", $0) }.joined()
+        let command = "add-generic-password -U -a \"\(account)\" -s \"\(claudeCodeService)\" -X \(hexPassword)\n"
+
+        let process = Process()
+        process.executableURL = URL(fileURLWithPath: "/usr/bin/security")
+        process.arguments = ["-i"]
+
+        let input = Pipe()
+        process.standardInput = input
+        process.standardOutput = FileHandle.nullDevice
+        process.standardError = FileHandle.nullDevice
+        let done = DispatchSemaphore(value: 0)
+        process.terminationHandler = { _ in done.signal() }
+
+        do {
+            try process.run()
+        } catch {
+            return false
+        }
+
+        input.fileHandleForWriting.write(Data(command.utf8))
+        try? input.fileHandleForWriting.close()
+
+        if done.wait(timeout: .now() + .seconds(5)) == .timedOut {
+            process.terminate()
+            return false
+        }
+
+        return process.terminationStatus == 0
+    }
+
+    private static func invalidateRecentCredentialCache() {
+        credentialReadLock.lock()
+        recentCredentialCacheEntry = nil
+        credentialReadLock.unlock()
     }
 
     // MARK: - Anthropic API Key
@@ -263,6 +434,10 @@ enum KeychainManager {
         taskSecurityFrameworkReadOverride = override
     }
 
+    static func _setSecurityCLIWriteOverrideForTesting(_ override: (([String: Any], String) -> Bool)?) {
+        taskSecurityCLIWriteOverride = override
+    }
+
     static func _setNowOverrideForTesting(_ override: (() -> Date)?) {
         taskNowOverride = override
     }
@@ -274,6 +449,7 @@ enum KeychainManager {
         credentialReadLock.unlock()
         taskSecurityCLIReadOverride = nil
         taskSecurityFrameworkReadOverride = nil
+        taskSecurityCLIWriteOverride = nil
         taskNowOverride = nil
     }
     #endif

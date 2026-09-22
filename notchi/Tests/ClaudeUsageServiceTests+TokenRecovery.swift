@@ -343,6 +343,73 @@ extension ClaudeUsageServiceTests {
         XCTAssertTrue(scheduler.intervals.isEmpty)
     }
 
+    func testStartPollingWithExpiredCredentialsRefreshesOverNetworkWhenNoClaudeCodeSession() async throws {
+        let scheduler = PollSchedulerSpy()
+        let expiredDate = Date(timeIntervalSince1970: 10)
+        let now = Date(timeIntervalSince1970: 20)
+        var networkRefreshCalls = 0
+        var dependencies = makeDependencies(
+            scheduler: scheduler,
+            resolveUserAgent: { "claude-code/2.1.77" },
+            getCachedOAuthToken: { _ in nil },
+            getOAuthCredentials: { _ in
+                self.makeCredentials(
+                    accessToken: "expired-token",
+                    expiresAt: expiredDate,
+                    scopes: ["user:profile"]
+                )
+            },
+            refreshAccessTokenSilently: { "expired-token" },
+            now: { now },
+            fetchUsage: { request in
+                XCTAssertEqual(request.value(forHTTPHeaderField: "Authorization"), "Bearer network-token")
+                return (self.makeSuccessPayload(utilization: 33), self.makeResponse(statusCode: 200))
+            }
+        )
+        dependencies.refreshAccessTokenOverNetwork = {
+            networkRefreshCalls += 1
+            return "network-token"
+        }
+
+        let service = ClaudeUsageService(dependencies: dependencies)
+        AppSettings.isUsageEnabled = true
+        service.startPolling()
+        for _ in 0..<6 { await Task.yield() }
+
+        XCTAssertEqual(networkRefreshCalls, 1)
+        XCTAssertEqual(service.currentUsage?.usagePercentage, 33)
+        XCTAssertEqual(service.recoveryAction, .none)
+        XCTAssertEqual(scheduler.intervals, [60])
+    }
+
+    func testOAuth401RefreshesOverNetworkOnceAndDoesNotLoop() async throws {
+        let scheduler = PollSchedulerSpy()
+        var networkRefreshCalls = 0
+        var dependencies = makeDependencies(
+            scheduler: scheduler,
+            resolveUserAgent: { "claude-code/2.1.77" },
+            getCachedOAuthToken: { _ in "stale-token" },
+            getOAuthCredentials: { _ in
+                self.makeCredentials(accessToken: "stale-token", scopes: ["user:profile"])
+            },
+            fetchUsage: { _ in
+                (Data(), self.makeResponse(statusCode: 401))
+            }
+        )
+        dependencies.refreshAccessTokenOverNetwork = {
+            networkRefreshCalls += 1
+            return "network-token-\(networkRefreshCalls)"
+        }
+
+        let service = ClaudeUsageService(dependencies: dependencies)
+        AppSettings.isUsageEnabled = true
+        service.startPolling()
+        for _ in 0..<8 { await Task.yield() }
+
+        XCTAssertEqual(networkRefreshCalls, 1)
+        XCTAssertEqual(service.recoveryAction, .waitForClaudeCode)
+    }
+
     func testStartPollingPrefersCachedTokenWithoutReadingClaudeCredentials() async throws {
         let scheduler = PollSchedulerSpy()
         var credentialReads = 0

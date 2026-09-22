@@ -55,6 +55,7 @@ struct ClaudeUsageServiceDependencies {
     var pollJitter: () -> Double
     var now: () -> Date
     var schedulePoll: @MainActor (TimeInterval, @escaping () -> Void) -> any ClaudeUsagePollTimer
+    var refreshAccessTokenOverNetwork: () async -> String? = { nil }
 }
 
 private struct LivePollTimer: ClaudeUsagePollTimer {
@@ -440,7 +441,7 @@ nonisolated enum ClaudeCLIResolver {
         var resolvedPaths: [String] = []
         var seenPaths: Set<String> = []
 
-        for path in explicitPaths + pathDerivedCandidates + shellResolvedPath {
+        for path in explicitPaths + pathDerivedCandidates + shellResolvedPath + desktopBundledExecutablePaths(home: home) {
             guard path.hasPrefix("/") else { continue }
             guard !seenPaths.contains(path) else { continue }
             guard testHooks.isExecutableFile(path) else { continue }
@@ -449,6 +450,18 @@ nonisolated enum ClaudeCLIResolver {
         }
 
         return resolvedPaths
+    }
+
+    // WHY: users of the Claude desktop app have Claude Code only as the copy the app
+    // bundles, never on PATH. Newest version first.
+    static func desktopBundledExecutablePaths(home: String) -> [String] {
+        let root = "\(home)/Library/Application Support/Claude/claude-code"
+        guard let versions = try? FileManager.default.contentsOfDirectory(atPath: root) else {
+            return []
+        }
+        return versions
+            .sorted { $0.compare($1, options: .numeric) == .orderedDescending }
+            .map { "\(root)/\($0)/claude.app/Contents/MacOS/claude" }
     }
 
     static func resolveCommandPathViaShell(environment: [String: String]) -> String? {
@@ -675,6 +688,9 @@ extension ClaudeUsageServiceDependencies {
                 handler()
             }
             return LivePollTimer(timer: timer)
+        },
+        refreshAccessTokenOverNetwork: {
+            await KeychainManager.refreshAccessTokenOverNetwork()
         }
     )
 }
@@ -1273,7 +1289,8 @@ final class ClaudeUsageService {
                 if httpResponse.statusCode == 401 {
                     await handleAuthFailure(
                         currentToken: accessToken,
-                        userInitiated: userInitiated
+                        userInitiated: userInitiated,
+                        allowNetworkRefresh: allowPreflightRefreshRecovery
                     )
                     return .handled
                 }
@@ -1366,7 +1383,8 @@ final class ClaudeUsageService {
             if httpResponse.statusCode == 401 {
                 await handleAuthFailure(
                     currentToken: accessToken,
-                    userInitiated: userInitiated
+                    userInitiated: userInitiated,
+                    allowNetworkRefresh: allowPreflightRefreshRecovery
                 )
                 return .handled
             }
@@ -1447,9 +1465,33 @@ final class ClaudeUsageService {
         )
     }
 
+    // Returns true when a network-refreshed token was obtained and a fetch was performed with it.
+    // The retry disables further refresh recovery so a rejected fresh token cannot loop.
+    private func refreshOverNetworkAndRetry(
+        replacing currentToken: String,
+        userInitiated: Bool
+    ) async -> Bool {
+        guard let freshToken = await dependencies.refreshAccessTokenOverNetwork(),
+              freshToken != currentToken else {
+            return false
+        }
+
+        cachedToken = freshToken
+        consecutiveRateLimits = 0
+        logger.info("Token refreshed over the network")
+        await performFetch(
+            with: freshToken,
+            userInitiated: userInitiated,
+            consultCredentialMetadata: false,
+            allowPreflightRefreshRecovery: false
+        )
+        return true
+    }
+
     private func handleAuthFailure(
         currentToken: String,
-        userInitiated: Bool
+        userInitiated: Bool,
+        allowNetworkRefresh: Bool
     ) async {
         cachedToken = nil
         clearOAuthBackoffState()
@@ -1473,6 +1515,13 @@ final class ClaudeUsageService {
             stopPolling()
 
         case let .waitForClaudeCode(message):
+            if allowNetworkRefresh,
+               await refreshOverNetworkAndRetry(
+                   replacing: currentToken,
+                   userInitiated: userInitiated
+               ) {
+                return
+            }
             presentWaitForClaudeCode(message: message)
             stopPolling()
         }
@@ -1532,6 +1581,14 @@ final class ClaudeUsageService {
                     consultCredentialMetadata: false,
                     allowPreflightRefreshRecovery: false
                 )
+                return .handled
+            }
+
+            if allowPreflightRefreshRecovery,
+               await refreshOverNetworkAndRetry(
+                   replacing: effectiveAccessToken,
+                   userInitiated: userInitiated
+               ) {
                 return .handled
             }
 
