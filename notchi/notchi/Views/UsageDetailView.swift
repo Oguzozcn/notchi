@@ -78,17 +78,7 @@ struct UsageDetailView: View {
     private var periods: [UsagePeriodDisplay] {
         switch resolvedProvider {
         case .claude:
-            let stale = claudeUsage.isUsageStale
-            let heldOver = claudeUsage.isWeeklyUsageHeldOver
-            return [
-                UsageMetrics.periodDisplay(title: String(localized: "5-hour limit"), usage: claudeUsage.currentUsage, isStale: stale),
-                UsageMetrics.periodDisplay(title: String(localized: "Weekly · all models"), usage: claudeUsage.currentWeeklyUsage, isStale: heldOver),
-                UsageMetrics.periodDisplay(
-                    title: String(localized: "Weekly · \(claudeUsage.currentModelUsageName ?? String(localized: "Model"))"),
-                    usage: claudeUsage.currentModelUsage,
-                    isStale: heldOver
-                ),
-            ].compactMap { $0 }
+            return Self.claudePeriods(claudeUsage)
         case .codex:
             let stale = codexUsage.isUsageStale
             return [
@@ -97,6 +87,21 @@ struct UsageDetailView: View {
                 UsageMetrics.periodDisplay(title: String(localized: "Reviews"), usage: codexUsage.currentReviewsUsage, isStale: stale),
             ].compactMap { $0 }
         }
+    }
+
+    // Same limits, order and wording as Claude's "Plan usage limits".
+    static func claudePeriods(_ claudeUsage: ClaudeUsageService) -> [UsagePeriodDisplay] {
+        let stale = claudeUsage.isUsageStale
+        let heldOver = claudeUsage.isWeeklyUsageHeldOver
+        return [
+            UsageMetrics.periodDisplay(title: String(localized: "5-hour limit"), usage: claudeUsage.currentUsage, isStale: stale),
+            UsageMetrics.periodDisplay(title: String(localized: "Weekly · all models"), usage: claudeUsage.currentWeeklyUsage, isStale: heldOver),
+            UsageMetrics.periodDisplay(
+                title: String(localized: "Weekly · \(claudeUsage.currentModelUsageName ?? String(localized: "Model"))"),
+                usage: claudeUsage.currentModelUsage,
+                isStale: heldOver
+            ),
+        ].compactMap { $0 }
     }
 
     private var codexCreditsUSD: Double? {
@@ -342,6 +347,7 @@ struct UsageDetailView: View {
 private struct UsageProgressBar: View {
     let percentUsed: Int
     let color: Color
+    var height: CGFloat = 6
 
     var body: some View {
         GeometryReader { geometry in
@@ -353,13 +359,14 @@ private struct UsageProgressBar: View {
                     .frame(width: geometry.size.width * Double(min(max(percentUsed, 0), 100)) / 100)
             }
         }
-        .frame(height: 6)
+        .frame(height: height)
     }
 }
 
 struct UsagePeriodRowView: View {
     let display: UsagePeriodDisplay
     var accent: Color = TerminalColors.claudeOrange
+    var compact = false
 
     // Provider accent until the limit gets tight, then the warning colors take over.
     private var barColor: Color {
@@ -370,10 +377,10 @@ struct UsagePeriodRowView: View {
     }
 
     var body: some View {
-        VStack(alignment: .leading, spacing: 7) {
+        VStack(alignment: .leading, spacing: compact ? 4 : 7) {
             HStack(alignment: .firstTextBaseline, spacing: 6) {
                 Text(display.title)
-                    .panelFont(size: 13, weight: .semibold)
+                    .panelFont(size: compact ? 11 : 13, weight: .semibold)
                     .foregroundColor(TerminalColors.primaryText)
                     .lineLimit(1)
                     .layoutPriority(1)
@@ -390,13 +397,30 @@ struct UsagePeriodRowView: View {
                         .lineLimit(1)
                 }
                 Text("\(display.percentUsed)%")
-                    .panelFont(size: 11, weight: .semibold, design: .monospaced)
+                    .panelFont(size: compact ? 10 : 11, weight: .semibold, design: .monospaced)
                     .foregroundColor(display.percentUsed >= 80 ? barColor : TerminalColors.primaryText)
                     .lineLimit(1)
                     .fixedSize()
             }
-            UsageProgressBar(percentUsed: display.percentUsed, color: barColor)
+            UsageProgressBar(percentUsed: display.percentUsed, color: barColor, height: compact ? 4 : 6)
         }
+    }
+}
+
+// Claude's plan limits as compact bars for the bottom of the main panel.
+struct ClaudeLimitsStackView: View {
+    let periods: [UsagePeriodDisplay]
+    let onOpenDetail: (() -> Void)?
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 7) {
+            ForEach(periods, id: \.title) { period in
+                UsagePeriodRowView(display: period, accent: TerminalColors.claudeOrange, compact: true)
+            }
+        }
+        .padding(.top, 4)
+        .contentShape(Rectangle())
+        .onTapGesture { onOpenDetail?() }
     }
 }
 

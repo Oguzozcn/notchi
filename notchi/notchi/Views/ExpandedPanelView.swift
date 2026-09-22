@@ -564,9 +564,32 @@ struct ExpandedPanelView: View {
         .frame(maxWidth: .infinity, alignment: .topLeading)
     }
 
+    // Healthy Claude data gets Claude-style per-limit bars; every other state (loading, errors,
+    // connect/retry prompts, Codex) keeps the single bar with its actions.
+    static func showsClaudeLimitsStack(state: SharedUsageBarState, panelMode: ExpandedPanelMode) -> Bool {
+        state.provider == .claude
+            && state.isProviderSpecific
+            && state.usage != nil
+            && state.error == nil
+            && state.statusMessage == nil
+            && state.recoveryAction == .none
+            && panelMode != .islandOnly
+    }
+
     @ViewBuilder
     private var sharedUsageBar: some View {
-        if let state = sharedUsageBarState {
+        if let state = sharedUsageBarState,
+           Self.showsClaudeLimitsStack(state: state, panelMode: panelMode) {
+            ClaudeLimitsStackView(
+                periods: UsageDetailView.claudePeriods(usageService),
+                onOpenDetail: hasUsageDetailData ? {
+                    withAnimation(.spring(response: 0.35, dampingFraction: 0.85)) {
+                        isActivityCollapsed = false
+                        showingUsageDetail = true
+                    }
+                } : nil
+            )
+        } else if let state = sharedUsageBarState {
             UsageBarView(
                 usage: state.usage,
                 hasUnlimitedCredits: state.isProviderSpecific && state.provider == .codex && codexUsageService.hasUnlimitedCredits,

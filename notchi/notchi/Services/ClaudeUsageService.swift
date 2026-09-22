@@ -1033,12 +1033,28 @@ final class ClaudeUsageService {
         }
     }
 
+    // Claude Code may have logged in again, possibly as another account. The keychain is the
+    // source of truth, so follow a newer unexpired token instead of polling with the old one.
+    private func adoptNewerKeychainToken(over accessToken: String) -> String {
+        guard let credentials = dependencies.getOAuthCredentials(false),
+              credentials.accessToken != accessToken,
+              credentials.expiresAt.map({ $0 > dependencies.now() }) ?? true else {
+            return accessToken
+        }
+        logger.info("Claude Code credentials changed; switching to the new token")
+        cachedToken = credentials.accessToken
+        planLabel = credentials.planLabel ?? planLabel
+        dependencies.cacheOAuthToken(credentials.accessToken)
+        return credentials.accessToken
+    }
+
     private func fetchUsage() async {
-        guard let accessToken = cachedToken else {
+        guard let currentToken = cachedToken else {
             logger.warning("No cached token available, stopping polling")
             stopPolling()
             return
         }
+        let accessToken = adoptNewerKeychainToken(over: currentToken)
 
         if isHeadersFallbackActive {
             if activeHeadersFallbackProbeRemaining() != nil {
