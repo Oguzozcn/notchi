@@ -28,8 +28,8 @@ final class SessionData: Identifiable {
     let sessionKey: ProviderSessionKey
     let cwd: String
     let sessionStartTime: Date
-    let spriteXPosition: CGFloat
-    let spriteYOffset: CGFloat
+    private(set) var spriteXPosition: CGFloat
+    private(set) var spriteYOffset: CGFloat
     let isInteractive: Bool
 
     private(set) var task: NotchiTask = .idle
@@ -200,6 +200,12 @@ final class SessionData: Identifiable {
         resolveXPosition(hash: hash, existingPositions: existingPositions)
     }
 #endif
+
+    // Drag-to-move from the grass island. x is the 0...1 layout fraction, y the upward offset.
+    func moveSprite(xPosition: CGFloat, yOffset: CGFloat, maxLift: CGFloat) {
+        spriteXPosition = min(max(xPosition, 0), 1)
+        spriteYOffset = min(max(yOffset, Self.yOffsetBase - max(maxLift, 0)), Self.yOffsetBase)
+    }
 
     private static func resolveYOffset(hash: UInt) -> CGFloat {
         let yBits = (hash >> 8) & 0xFF

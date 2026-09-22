@@ -180,8 +180,12 @@ struct GrassTapOverlay: View {
                                 xPosition: session.spriteXPosition,
                                 yOffset: session.spriteYOffset,
                                 totalWidth: geometry.size.width,
+                                totalHeight: geometry.size.height,
                                 hoveredSessionId: $hoveredSessionId,
-                                onTap: { onSelectSession?(session.id) }
+                                onTap: { onSelectSession?(session.id) },
+                                onMove: { x, y, maxLift in
+                                    session.moveSprite(xPosition: x, yOffset: y, maxLift: maxLift)
+                                }
                             )
                         }
                     }
@@ -207,11 +211,15 @@ private struct SpriteTapTarget: View {
     let xPosition: CGFloat
     let yOffset: CGFloat
     let totalWidth: CGFloat
+    var totalHeight: CGFloat = 0
     @Binding var hoveredSessionId: String?
     var onTap: (() -> Void)?
+    // (xPosition, yOffset, maxLift) while dragging the sprite around the island.
+    var onMove: ((CGFloat, CGFloat, CGFloat) -> Void)?
 
     @Environment(\.panelScale) private var panelScale
     @State private var tapScale: CGFloat = 1.0
+    @State private var dragStart: CGPoint?
 
     var body: some View {
         let spriteSize = SpriteLayout.size * SpriteLayout.spriteScale(panelScale: panelScale)
@@ -228,6 +236,22 @@ private struct SpriteTapTarget: View {
                 hoveredSessionId = nil
             }
         }
+        // A drag needs movement, so a plain click still reaches the button.
+        .highPriorityGesture(
+            DragGesture(minimumDistance: 3)
+                .onChanged { value in
+                    let start = dragStart ?? CGPoint(x: xPosition, y: yOffset)
+                    if dragStart == nil { dragStart = start }
+                    let usableWidth = totalWidth * SpriteLayout.usableWidthFraction
+                    guard usableWidth > 0 else { return }
+                    onMove?(
+                        start.x + value.translation.width / usableWidth,
+                        start.y + value.translation.height,
+                        max(totalHeight - spriteSize, 0)
+                    )
+                }
+                .onEnded { _ in dragStart = nil }
+        )
         .scaleEffect(tapScale)
         .offset(x: SpriteLayout.xOffset(xPosition: xPosition, totalWidth: totalWidth), y: yOffset)
     }

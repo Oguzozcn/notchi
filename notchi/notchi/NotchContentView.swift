@@ -819,11 +819,8 @@ struct NotchContentView: View {
             return
         }
 
-        let shouldPlayHaptic = sessionStore.selectedSessionId != sessionId || !showingSessionActivity
-        if shouldPlayHaptic {
-            haptics.playSessionSelection()
-        }
-
+        // No haptic here: the physical trackpad click already gives feedback, and a second
+        // haptic tap right after it feels like a double click.
         if let session = sessionStore.selectSession(matchingStableId: sessionId) {
             TerminalJumpService.shared.jump(to: session)
         }
