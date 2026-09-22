@@ -1,0 +1,58 @@
+name: Fork Build (unsigned)
+
+on:
+  push:
+    branches: [fix/refresh-oauth-token]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  build:
+    runs-on: macos-15
+    timeout-minutes: 40
+    env:
+      DEVELOPER_DIR: /Applications/Xcode_26.3.app/Contents/Developer
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Test
+        run: ./scripts/test.sh all
+
+      - name: Upload test results
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: TestResults
+          path: build/test/TestResults.xcresult
+
+      - name: Build Release app
+        run: |
+          xcodebuild build \
+            -project notchi/notchi.xcodeproj \
+            -scheme notchi \
+            -configuration Release \
+            -destination 'platform=macOS' \
+            -derivedDataPath build/app \
+            CODE_SIGNING_ALLOWED=NO CODE_SIGNING_REQUIRED=NO CODE_SIGN_IDENTITY="" \
+            | tail -20
+
+      - name: Disable auto-update and ad-hoc sign
+        run: |
+          APP="$(find build/app/Build/Products/Release -maxdepth 1 -name '*.app' | head -1)"
+          echo "APP=$APP"
+          # Keep Sparkle from replacing this patched build with the upstream release.
+          /usr/libexec/PlistBuddy -c "Set :SUEnableAutomaticChecks false" "$APP/Contents/Info.plist"
+          /usr/libexec/PlistBuddy -c "Set :SUAutomaticallyUpdate false" "$APP/Contents/Info.plist"
+          codesign --force --deep --sign - "$APP"
+          codesign --verify --deep --strict "$APP"
+          mkdir -p dist
+          ditto -c -k --keepParent "$APP" dist/Notchi.zip
+
+      - name: Upload app
+        uses: actions/upload-artifact@v4
+        with:
+          name: Notchi-unsigned
+          path: dist/Notchi.zip
