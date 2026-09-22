@@ -122,6 +122,14 @@ final class ClaudeOAuthTokenRefresherTests: XCTestCase {
         )
     }
 
+    func testPlanLabelIncludesTierMultiplier() {
+        XCTAssertEqual(KeychainManager.planLabel(subscriptionType: "max", rateLimitTier: "default_claude_max_5x"), "Max (5x)")
+        XCTAssertEqual(KeychainManager.planLabel(subscriptionType: "max", rateLimitTier: "default_claude_max_20x"), "Max (20x)")
+        XCTAssertEqual(KeychainManager.planLabel(subscriptionType: "pro", rateLimitTier: "default_claude_pro"), "Pro")
+        XCTAssertEqual(KeychainManager.planLabel(subscriptionType: "pro", rateLimitTier: nil), "Pro")
+        XCTAssertNil(KeychainManager.planLabel(subscriptionType: nil, rateLimitTier: "default_claude_max_5x"))
+    }
+
     private static func response(for request: URLRequest, status: Int) -> HTTPURLResponse {
         HTTPURLResponse(url: request.url!, statusCode: status, httpVersion: nil, headerFields: nil)!
     }

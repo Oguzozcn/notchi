@@ -724,6 +724,7 @@ final class ClaudeUsageService {
         )
     }
     var lastObservedAt: Date?
+    var planLabel: String?
     var recoveryAction: ClaudeUsageRecoveryAction = .none
 
     private static let usageURL = URL(string: "https://api.anthropic.com/api/oauth/usage")!
@@ -897,6 +898,7 @@ final class ClaudeUsageService {
             recoveredCredentials = dependencies.getOAuthCredentials(false)
             if let silentCredentials = recoveredCredentials {
                 let recoveredToken = silentCredentials.accessToken
+                planLabel = silentCredentials.planLabel ?? planLabel
                 dependencies.cacheOAuthToken(recoveredToken)
                 return ClaudeUsageAccessTokenResolution(token: recoveredToken, source: .recoveredFromCredentials, credentials: silentCredentials)
             }
@@ -916,6 +918,7 @@ final class ClaudeUsageService {
 
         if let silentCredentials = recoveredCredentials {
             let recoveredToken = silentCredentials.accessToken
+            planLabel = silentCredentials.planLabel ?? planLabel
             dependencies.cacheOAuthToken(recoveredToken)
             return ClaudeUsageAccessTokenResolution(token: recoveredToken, source: .recoveredFromCredentials, credentials: silentCredentials)
         }
@@ -1536,6 +1539,7 @@ final class ClaudeUsageService {
         guard let credentials = cachedCredentials ?? dependencies.getOAuthCredentials(false) else {
             return .proceed(accessToken)
         }
+        planLabel = credentials.planLabel ?? planLabel
 
         let usesCredentialMetadata: Bool
         let effectiveAccessToken: String

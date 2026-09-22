@@ -81,10 +81,10 @@ struct UsageDetailView: View {
             let stale = claudeUsage.isUsageStale
             let heldOver = claudeUsage.isWeeklyUsageHeldOver
             return [
-                UsageMetrics.periodDisplay(title: String(localized: "Session"), usage: claudeUsage.currentUsage, isStale: stale),
-                UsageMetrics.periodDisplay(title: String(localized: "Weekly"), usage: claudeUsage.currentWeeklyUsage, isStale: heldOver),
+                UsageMetrics.periodDisplay(title: String(localized: "5-hour limit"), usage: claudeUsage.currentUsage, isStale: stale),
+                UsageMetrics.periodDisplay(title: String(localized: "Weekly · all models"), usage: claudeUsage.currentWeeklyUsage, isStale: heldOver),
                 UsageMetrics.periodDisplay(
-                    title: claudeUsage.currentModelUsageName ?? String(localized: "Model"),
+                    title: String(localized: "Weekly · \(claudeUsage.currentModelUsageName ?? String(localized: "Model"))"),
                     usage: claudeUsage.currentModelUsage,
                     isStale: heldOver
                 ),
@@ -169,7 +169,7 @@ struct UsageDetailView: View {
 
     @ViewBuilder private var usageRows: some View {
         ForEach(periods, id: \.title) { period in
-            UsagePeriodRowView(display: period)
+            UsagePeriodRowView(display: period, accent: resolvedProvider.accentColor)
         }
 
         if let extraUsage {
@@ -202,7 +202,13 @@ struct UsageDetailView: View {
             costDashboard
                 .padding(.bottom, showGrassIsland ? -4 : 2)
 
-            if case .provider = resolvedTab {
+            if case .provider(.claude) = resolvedTab {
+                // Mirrors Claude's "Plan usage limits" block: one limit per row.
+                VStack(alignment: .leading, spacing: 12) {
+                    planLimitsHeader
+                    usageRows
+                }
+            } else if case .provider = resolvedTab {
                 if Self.usesTwoColumnLayout(
                     rowCount: usageRowCount,
                     showGrassIsland: showGrassIsland,
@@ -225,6 +231,22 @@ struct UsageDetailView: View {
             }
         }
         .frame(maxWidth: .infinity, alignment: .topLeading)
+    }
+
+    private var planLimitsHeader: some View {
+        VStack(alignment: .leading, spacing: 8) {
+            Divider().background(Color.white.opacity(0.08))
+            HStack(spacing: 6) {
+                Circle()
+                    .fill(TerminalColors.claudeOrange)
+                    .frame(width: 6, height: 6)
+                Text(claudeUsage.planLabel.map { String(localized: "Plan usage limits · \($0)") }
+                     ?? String(localized: "Plan usage limits"))
+                    .panelFont(size: 12, weight: .medium)
+                    .foregroundColor(TerminalColors.secondaryText)
+                    .lineLimit(1)
+            }
+        }
     }
 
     private var header: some View {
@@ -331,24 +353,31 @@ private struct UsageProgressBar: View {
                     .frame(width: geometry.size.width * Double(min(max(percentUsed, 0), 100)) / 100)
             }
         }
-        .frame(height: 5)
+        .frame(height: 6)
     }
 }
 
 struct UsagePeriodRowView: View {
     let display: UsagePeriodDisplay
+    var accent: Color = TerminalColors.claudeOrange
+
+    // Provider accent until the limit gets tight, then the warning colors take over.
+    private var barColor: Color {
+        if display.isStale { return TerminalColors.dimmedText }
+        return display.percentUsed >= 80
+            ? TerminalColors.usageColor(forPercentUsed: display.percentUsed)
+            : accent
+    }
 
     var body: some View {
-        let color = display.isStale
-            ? TerminalColors.dimmedText
-            : TerminalColors.usageColor(forPercentUsed: display.percentUsed)
         VStack(alignment: .leading, spacing: 7) {
             HStack(alignment: .firstTextBaseline, spacing: 6) {
                 Text(display.title)
-                    .panelFont(size: 14, weight: .semibold)
+                    .panelFont(size: 13, weight: .semibold)
                     .foregroundColor(TerminalColors.primaryText)
                     .lineLimit(1)
                     .layoutPriority(1)
+                Spacer(minLength: 4)
                 if display.isStale {
                     Text("stale data")
                         .panelFont(size: 10)
@@ -360,14 +389,13 @@ struct UsagePeriodRowView: View {
                         .foregroundColor(TerminalColors.secondaryText)
                         .lineLimit(1)
                 }
-                Spacer(minLength: 4)
                 Text("\(display.percentUsed)%")
                     .panelFont(size: 11, weight: .semibold, design: .monospaced)
-                    .foregroundColor(color)
+                    .foregroundColor(display.percentUsed >= 80 ? barColor : TerminalColors.primaryText)
                     .lineLimit(1)
                     .fixedSize()
             }
-            UsageProgressBar(percentUsed: display.percentUsed, color: color)
+            UsageProgressBar(percentUsed: display.percentUsed, color: barColor)
         }
     }
 }

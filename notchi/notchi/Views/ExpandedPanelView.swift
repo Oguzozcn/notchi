@@ -512,16 +512,19 @@ struct ExpandedPanelView: View {
                 .frame(height: headerClearance)
                 .allowsHitTesting(false)
 
-            UsageDetailView(
-                claudeUsage: usageService,
-                codexUsage: codexUsageService,
-                costStore: CostHistoryStore.shared,
-                codexCostStore: CostHistoryStore.sharedCodex,
-                defaultProvider: usageDetailDefaultProvider
-            )
-            .padding(.horizontal, 12)
-            .padding(.top, 8)
-            .padding(.bottom, 12)
+            ScrollView {
+                UsageDetailView(
+                    claudeUsage: usageService,
+                    codexUsage: codexUsageService,
+                    costStore: CostHistoryStore.shared,
+                    codexCostStore: CostHistoryStore.sharedCodex,
+                    defaultProvider: usageDetailDefaultProvider
+                )
+                .padding(.horizontal, 12)
+                .padding(.top, 8)
+                .padding(.bottom, 12)
+            }
+            .scrollIndicators(.never)
             .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
         }
         .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)

@@ -8,6 +8,7 @@ struct ClaudeOAuthCredentials: Equatable {
     let accessToken: String
     let expiresAt: Date?
     let scopes: Set<String>
+    var planLabel: String? = nil
 }
 
 enum KeychainManager {
@@ -475,8 +476,28 @@ enum KeychainManager {
         return ClaudeOAuthCredentials(
             accessToken: accessToken,
             expiresAt: parseExpiresAt(from: oauth["expiresAt"] ?? oauth["expires_at"]),
-            scopes: parseScopes(from: oauth["scopes"])
+            scopes: parseScopes(from: oauth["scopes"]),
+            planLabel: planLabel(
+                subscriptionType: oauth["subscriptionType"] as? String,
+                rateLimitTier: oauth["rateLimitTier"] as? String
+            )
         )
+    }
+
+    // e.g. ("max", "default_claude_max_5x") -> "Max (5x)"
+    static func planLabel(subscriptionType: String?, rateLimitTier: String?) -> String? {
+        guard let subscriptionType = subscriptionType?.trimmingCharacters(in: .whitespacesAndNewlines),
+              !subscriptionType.isEmpty else {
+            return nil
+        }
+        let name = subscriptionType.prefix(1).uppercased() + subscriptionType.dropFirst()
+        if let tier = rateLimitTier,
+           let multiplier = tier.split(separator: "_").last,
+           multiplier.hasSuffix("x"),
+           Int(multiplier.dropLast()) != nil {
+            return "\(name) (\(multiplier))"
+        }
+        return name
     }
 
     private static func parseScopes(from rawValue: Any?) -> Set<String> {
