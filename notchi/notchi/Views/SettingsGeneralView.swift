@@ -8,6 +8,7 @@ struct SettingsGeneralView: View {
     @State private var panelToggleShortcut = AppSettings.panelToggleShortcut
     @State private var launchAtLogin = SMAppService.mainApp.status == .enabled
     @AppStorage(AppSettings.expandOnHoverKey) private var expandOnHover = false
+    @AppStorage(AppSettings.hoverHapticsKey) private var hoverHaptics = true
 
     var body: some View {
         VStack(alignment: .leading, spacing: SettingsLayout.sectionSpacing) {
@@ -28,6 +29,13 @@ struct SettingsGeneralView: View {
             Button(action: { expandOnHover.toggle() }) {
                 SettingsRowView(icon: "cursorarrow.motionlines", title: "Expand on Hover") {
                     ToggleSwitch(isOn: expandOnHover)
+                }
+            }
+            .buttonStyle(.plain)
+
+            Button(action: { hoverHaptics.toggle() }) {
+                SettingsRowView(icon: "hand.tap", title: "Haptic on Hover") {
+                    ToggleSwitch(isOn: hoverHaptics)
                 }
             }
             .buttonStyle(.plain)

@@ -12,6 +12,7 @@ final class HapticService {
     private init() {}
 
     func playHoverClick() {
+        guard AppSettings.hoverHaptics else { return }
         let now = Date()
         if let lastHoverClickAt,
            now.timeIntervalSince(lastHoverClickAt) < Self.hoverCooldown {

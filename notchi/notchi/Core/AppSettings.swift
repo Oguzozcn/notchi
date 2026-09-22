@@ -222,6 +222,7 @@ struct AppSettings {
     static let showGrassIslandKey = "showGrassIsland"
     static let showGitBranchAndPullRequestKey = "showGitBranchAndPullRequest"
     static let expandOnHoverKey = "expandOnHover"
+    static let hoverHapticsKey = "hoverHaptics"
     static let panelToggleShortcutKey = "panelToggleShortcut"
     static let notchLeftContentKey = "notchLeftContent"
     static let notchRightContentKey = "notchRightContent"
@@ -362,6 +363,11 @@ struct AppSettings {
     static var showGitBranchAndPullRequest: Bool {
         get { UserDefaults.standard.object(forKey: showGitBranchAndPullRequestKey) as? Bool ?? true }
         set { UserDefaults.standard.set(newValue, forKey: showGitBranchAndPullRequestKey) }
+    }
+
+    static var hoverHaptics: Bool {
+        get { UserDefaults.standard.object(forKey: hoverHapticsKey) as? Bool ?? true }
+        set { UserDefaults.standard.set(newValue, forKey: hoverHapticsKey) }
     }
 
     static var expandOnHover: Bool {
