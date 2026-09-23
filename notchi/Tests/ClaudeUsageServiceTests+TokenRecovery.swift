@@ -340,7 +340,8 @@ extension ClaudeUsageServiceTests {
         XCTAssertTrue(AppSettings.isUsageEnabled)
         XCTAssertEqual(service.error, "Start a Claude Code session to track usage")
         XCTAssertEqual(service.recoveryAction, .waitForClaudeCode)
-        XCTAssertTrue(scheduler.intervals.isEmpty)
+        // Only the self-heal retry is armed; regular polling stays stopped.
+        XCTAssertEqual(scheduler.intervals, [300])
     }
 
     func testStartPollingWithExpiredCredentialsRefreshesOverNetworkWhenNoClaudeCodeSession() async throws {
@@ -546,7 +547,7 @@ extension ClaudeUsageServiceTests {
         XCTAssertTrue(service.isUsageStale)
         XCTAssertEqual(service.recoveryAction, .waitForClaudeCode)
         XCTAssertEqual(service.currentUsage?.usagePercentage, 55)
-        XCTAssertTrue(scheduler.intervals.isEmpty)
+        XCTAssertEqual(scheduler.intervals, [300])
     }
 
     func testHandleClaudeResumeTriggerSchedulesDelayedReconnect() async throws {

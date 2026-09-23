@@ -417,6 +417,15 @@ struct ExpandedPanelView: View {
                         }
                         .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
 
+                        if !isShowingUsageDetail, panelMode != .islandOnly {
+                            let idleRemoteSessions = sessionStore.idleRemoteControlSessions()
+                            if !idleRemoteSessions.isEmpty {
+                                RemoteControlSessionsView(sessions: idleRemoteSessions)
+                                    .padding(.horizontal, 12)
+                                    .padding(.bottom, 6)
+                            }
+                        }
+
                         if !isShowingUsageDetail {
                             sharedUsageBar
                                 .padding(.horizontal, 12)
@@ -489,7 +498,8 @@ struct ExpandedPanelView: View {
                         },
                         onDeleteSession: { sessionId in
                             sessionStore.dismissSession(matchingStableId: sessionId)
-                        }
+                        },
+                        isRemoteControl: { sessionStore.isRemoteControl($0) }
                     )
                 }
 
@@ -764,6 +774,9 @@ struct ExpandedPanelView: View {
                                 color: TerminalColors.secondaryText
                             )
                             .layoutPriority(1)
+                            if sessionStore.isRemoteControl(session) {
+                                RemoteControlBadge()
+                            }
                             if showGitBranchAndPullRequest, let branch = session.gitBranch {
                                 GitBranchLabel(branch: branch)
                                 if let pullRequest = session.gitPullRequest {

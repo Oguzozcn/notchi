@@ -18,6 +18,27 @@ final class ClaudeDesktopSessionTitlesTests: XCTestCase {
         XCTAssertNil(ClaudeDesktopSessionTitles.parseTitle(from: Data(#"{"title":"No id"}"#.utf8)))
     }
 
+    func testParseSessionReadsRemoteControlStateAndDesktopId() throws {
+        let data = Data(#"{"sessionId":"local_1","cliSessionId":"cli-1","title":"Plan","remoteControlUserEnabled":true,"isArchived":false,"lastActivityAt":1790180185935}"#.utf8)
+
+        let session = try XCTUnwrap(ClaudeDesktopSessionTitles.parseSession(from: data))
+
+        XCTAssertEqual(session.desktopSessionId, "local_1")
+        XCTAssertTrue(session.isRemoteControlEnabled)
+        XCTAssertFalse(session.isArchived)
+        XCTAssertEqual(try XCTUnwrap(session.lastActivityAt).timeIntervalSince1970, 1_790_180_185.935, accuracy: 0.001)
+        XCTAssertEqual(session.appURL?.absoluteString, "claude://claude.ai/epitaxy/local_1")
+    }
+
+    func testParseSessionDefaultsRemoteControlOffAndKeepsUntitledSessions() throws {
+        let data = Data(#"{"sessionId":"local_2","cliSessionId":"cli-2"}"#.utf8)
+
+        let session = try XCTUnwrap(ClaudeDesktopSessionTitles.parseSession(from: data))
+
+        XCTAssertFalse(session.isRemoteControlEnabled)
+        XCTAssertNil(session.title)
+    }
+
     func testLoadTitlesScansNestedSessionFilesOnly() throws {
         let root = FileManager.default.temporaryDirectory
             .appendingPathComponent(UUID().uuidString, isDirectory: true)

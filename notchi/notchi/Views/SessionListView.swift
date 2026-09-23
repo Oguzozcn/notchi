@@ -7,6 +7,7 @@ struct SessionListView: View {
     @Binding var hoveredSessionId: String?
     let onSelectSession: (String) -> Void
     let onDeleteSession: (String) -> Void
+    var isRemoteControl: (SessionData) -> Bool = { _ in false }
 
     var body: some View {
         VStack(alignment: .leading, spacing: 0) {
@@ -33,7 +34,8 @@ struct SessionListView: View {
                                     hoveredSessionId = nil
                                 }
                             },
-                            onDelete: { onDeleteSession(session.id) }
+                            onDelete: { onDeleteSession(session.id) },
+                            isRemoteControl: isRemoteControl(session)
                         )
                     }
                 }

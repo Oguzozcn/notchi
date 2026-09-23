@@ -2165,5 +2165,8 @@ final class ClaudeUsageService {
             statusMessage = message
             isUsageStale = true
         }
+        // WHY: without a Claude Code CLI nothing else wakes us up; a network refresh that
+        // failed while the Mac was asleep or offline must be retried, not abandoned.
+        scheduleSelfHealRetry()
     }
 }

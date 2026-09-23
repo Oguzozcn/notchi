@@ -287,6 +287,21 @@ final class SessionStore {
         return label
     }
 
+    func isRemoteControl(_ session: SessionData) -> Bool {
+        session.provider == .claude
+            && ClaudeDesktopSessionTitles.isRemoteControlEnabled(forCLISessionId: session.rawSessionId)
+    }
+
+    // Remote Control sessions Notchi has no live hook session for (they are idle).
+    func idleRemoteControlSessions(limit: Int = 3) -> [ClaudeDesktopSessionInfo] {
+        let liveIds = Set(sessions.values.map(\.rawSessionId))
+        return Array(
+            ClaudeDesktopSessionTitles.remoteControlSessions()
+                .filter { !liveIds.contains($0.cliSessionId) }
+                .prefix(limit)
+        )
+    }
+
     private func claudeDesktopTitle(for session: SessionData) -> String? {
         guard session.provider == .claude else { return nil }
         return ClaudeDesktopSessionTitles.title(forCLISessionId: session.rawSessionId)
